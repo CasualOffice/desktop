@@ -12,6 +12,7 @@ interface RecentFile {
   path: string;
   kind: DocKind;
   last_opened: number;
+  pinned: boolean;
 }
 
 interface Profile {
@@ -249,46 +250,78 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
 // Launcher home-panel actions
 // =============================================================================
 
+/** Cache of the last-fetched recent list — used by the search filter to
+ *  re-render without re-hitting Rust on every keystroke. */
+let lastRecentList: RecentFile[] = [];
+let recentSearchQuery = '';
+
 async function refreshRecents() {
   try {
-    const list = await invoke<RecentFile[]>('get_recent_files');
-    const recent = $('recent');
-    const empty = $('empty');
-    const recentList = $<HTMLUListElement>('recent-list');
-    recentList.innerHTML = '';
-    if (list.length === 0) {
-      recent.hidden = true;
-      empty.hidden = false;
-      return;
-    }
-    recent.hidden = false;
-    empty.hidden = true;
-    for (const f of list) {
-      const li = document.createElement('li');
-      li.setAttribute('role', 'button');
-      li.tabIndex = 0;
-      li.title = f.path;
-      li.innerHTML = `
-        <div class="recent-icon ${f.kind}"></div>
-        <div class="recent-meta">
-          <div class="recent-name">${escapeHtml(basename(f.path))}</div>
-          <div class="recent-path">${escapeHtml(dirname(f.path))}</div>
-        </div>
-        <div class="recent-time">${escapeHtml(relTime(f.last_opened))}</div>
-      `;
-      const onClick = () => openRecent(f);
-      li.addEventListener('click', onClick);
-      li.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') onClick();
-      });
-      li.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        openRecentContextMenu(f, e.clientX, e.clientY);
-      });
-      recentList.appendChild(li);
-    }
+    lastRecentList = await invoke<RecentFile[]>('get_recent_files');
+    renderRecents();
   } catch (err) {
     console.error('refreshRecents failed', err);
+  }
+}
+
+function renderRecents() {
+  const recent = $('recent');
+  const empty = $('empty');
+  const noMatch = $('recent-no-match');
+  const recentList = $<HTMLUListElement>('recent-list');
+  recentList.innerHTML = '';
+  if (lastRecentList.length === 0) {
+    recent.hidden = true;
+    empty.hidden = false;
+    noMatch.hidden = true;
+    return;
+  }
+  recent.hidden = false;
+  empty.hidden = true;
+
+  // Filter by search; pinned bubble to top via the Rust-side ordering.
+  const q = recentSearchQuery.trim().toLowerCase();
+  const matches = q
+    ? lastRecentList.filter(
+        (f) =>
+          f.path.toLowerCase().includes(q) ||
+          basename(f.path).toLowerCase().includes(q),
+      )
+    : lastRecentList;
+
+  if (matches.length === 0) {
+    noMatch.hidden = false;
+    return;
+  }
+  noMatch.hidden = true;
+
+  for (const f of matches) {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'button');
+    li.tabIndex = 0;
+    li.title = f.path;
+    if (f.pinned) li.classList.add('pinned');
+    li.innerHTML = `
+      <div class="recent-icon ${f.kind}"></div>
+      <div class="recent-meta">
+        <div class="recent-name">
+          ${f.pinned ? '<span class="pin-mark" aria-label="Pinned">★</span>' : ''}
+          ${escapeHtml(basename(f.path))}
+        </div>
+        <div class="recent-path">${escapeHtml(dirname(f.path))}</div>
+      </div>
+      <div class="recent-time">${escapeHtml(relTime(f.last_opened))}</div>
+    `;
+    const onClick = () => openRecent(f);
+    li.addEventListener('click', onClick);
+    li.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') onClick();
+    });
+    li.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openRecentContextMenu(f, e.clientX, e.clientY);
+    });
+    recentList.appendChild(li);
   }
 }
 
@@ -302,7 +335,7 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
   const menu = document.createElement('div');
   menu.className = 'context-menu';
   menu.setAttribute('role', 'menu');
-  const items: Array<{ label: string; run: () => void; primary?: boolean }> = [
+  const items: Array<{ label: string; run: () => void; primary?: boolean; divider?: boolean }> = [
     { label: 'Open', run: () => openRecent(f), primary: true },
     {
       label: 'Open in new window',
@@ -311,6 +344,26 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
         invoke('open_document_window', { kind: f.kind, filePath: f.path })
           .then(() => toast(`Opened ${basename(f.path)}`, 'success'))
           .catch((err) => toast(`Could not open: ${err}`, 'error', 4500));
+      },
+    },
+    {
+      label: f.pinned ? 'Unpin from top' : 'Pin to top',
+      run: async () => {
+        try {
+          await invoke('set_recent_pinned', { path: f.path, pinned: !f.pinned });
+          toast(f.pinned ? 'Unpinned' : 'Pinned to top');
+        } catch (err) {
+          toast(`Could not update pin: ${err}`, 'error', 4500);
+        }
+        await refreshRecents();
+      },
+    },
+    {
+      label: 'Show in folder',
+      run: () => {
+        invoke('reveal_in_folder', { path: f.path }).catch((err) => {
+          toast(`Could not open folder: ${err}`, 'error', 4500);
+        });
       },
     },
     {
@@ -431,6 +484,14 @@ function bindHomePanel() {
     await invoke('clear_recent_files');
     await refreshRecents();
     toast('Recent files cleared');
+  });
+
+  // Filter recent files as the user types — pure client-side over the
+  // cached list, no Rust round-trips.
+  const search = $<HTMLInputElement>('recent-search');
+  search.addEventListener('input', () => {
+    recentSearchQuery = search.value;
+    renderRecents();
   });
 }
 

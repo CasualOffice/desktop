@@ -224,17 +224,26 @@
               </span>
               <div>
                 <div class="card-title">Open file</div>
-                <div class="card-sub">.docx or .xlsx from disk</div>
+                <div class="card-sub">.docx, .xlsx, .ods, .csv, .tsv</div>
               </div>
             </button>
           </section>
 
           <section id="recent" class="recent" hidden>
             <div class="recent-head">
-              <h2>Recent</h2>
-              <button id="clear-recents" type="button" class="link">Clear</button>
+              <h2>Recent &amp; pinned</h2>
+              <div class="recent-tools">
+                <label class="recent-search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
+                  </svg>
+                  <input id="recent-search" type="text" placeholder="Search recent…" autocomplete="off" />
+                </label>
+                <button id="clear-recents" type="button" class="link">Clear all</button>
+              </div>
             </div>
             <ul id="recent-list" class="recent-list"></ul>
+            <p id="recent-no-match" class="hint recent-no-match" hidden>No recent files match that search.</p>
           </section>
 
           <section id="empty" class="empty" hidden>

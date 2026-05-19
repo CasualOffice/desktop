@@ -443,7 +443,38 @@ input[type='text']:focus { border-color: var(--accent); box-shadow: 0 0 0 3px co
 
 /* Recent */
 .recent { display: flex; flex-direction: column; gap: 10px; }
-.recent-head { display: flex; align-items: center; justify-content: space-between; }
+.recent-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.recent-tools { display: flex; align-items: center; gap: 12px; }
+.recent-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  min-width: 200px;
+}
+.recent-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.recent-search svg { width: 14px; height: 14px; color: var(--muted); flex: 0 0 auto; }
+.recent-search input {
+  border: none; outline: none; background: transparent;
+  font: inherit; color: var(--fg);
+  flex: 1;
+  padding: 4px 0;
+  width: 100%;
+}
+.recent-no-match { margin-top: 8px; padding: 12px; text-align: center; }
+.pin-mark {
+  color: #f59e0b;
+  font-size: 11px;
+  vertical-align: 1px;
+  margin-right: 4px;
+}
+.recent-list li.pinned { border-color: color-mix(in srgb, #f59e0b 35%, var(--line)); }
 .recent-list {
   list-style: none; padding: 0; margin: 0;
   display: grid; gap: 4px;

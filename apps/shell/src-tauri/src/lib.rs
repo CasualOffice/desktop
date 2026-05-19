@@ -52,6 +52,12 @@ struct RecentFile {
     path: String,
     kind: DocKind,
     last_opened: u64,
+    /// True if the user pinned this file — pinned entries sort first
+    /// in the launcher's recent list and aren't evicted when the list
+    /// exceeds MAX_RECENTS. Defaults to false for backward compat with
+    /// older recent.json files.
+    #[serde(default)]
+    pinned: bool,
 }
 
 #[derive(Default)]
@@ -137,6 +143,9 @@ fn touch_recent(app: &AppHandle, state: &RecentsState, path: &str) {
         return;
     };
     let mut list = state.list.lock().unwrap();
+    // Preserve a pre-existing pinned flag if the entry is already in the
+    // list (we don't want re-opening a pinned file to silently unpin it).
+    let was_pinned = list.iter().find(|r| r.path == path).map(|r| r.pinned).unwrap_or(false);
     list.retain(|r| r.path != path);
     list.insert(
         0,
@@ -144,12 +153,48 @@ fn touch_recent(app: &AppHandle, state: &RecentsState, path: &str) {
             path: path.to_string(),
             kind,
             last_opened: now_secs(),
+            pinned: was_pinned,
         },
     );
-    list.truncate(MAX_RECENTS);
+    // Truncate to MAX_RECENTS, but never evict pinned entries.
+    if list.len() > MAX_RECENTS {
+        let mut kept: Vec<RecentFile> = Vec::with_capacity(MAX_RECENTS);
+        // Pinned first (preserve order), then most-recent unpinned to fill.
+        for r in list.iter().filter(|r| r.pinned) {
+            kept.push(r.clone());
+        }
+        for r in list.iter().filter(|r| !r.pinned) {
+            if kept.len() >= MAX_RECENTS {
+                break;
+            }
+            kept.push(r.clone());
+        }
+        *list = kept;
+    }
     let snapshot = list.clone();
     drop(list);
     let _ = save_recents(app, &snapshot);
+}
+
+#[tauri::command]
+fn set_recent_pinned(
+    app: AppHandle,
+    state: tauri::State<'_, RecentsState>,
+    path: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let mut list = state.list.lock().unwrap();
+    for r in list.iter_mut() {
+        if r.path == path {
+            r.pinned = pinned;
+        }
+    }
+    // Bubble pinned entries to the top while keeping intra-group order
+    // (sort_by_key is stable in Rust). Pinned == true sorts before false.
+    list.sort_by_key(|r| !r.pinned);
+    let snapshot = list.clone();
+    drop(list);
+    save_recents(&app, &snapshot)
 }
 
 /// Open a per-document Tauri window. Each opened file becomes a top-level
@@ -232,9 +277,24 @@ async fn open_document_window(
     Ok(title)
 }
 
+/// Read a file's bytes and return them via Tauri's binary IPC channel.
+///
+/// Returning `Vec<u8>` directly is unsafe for files past a few MB: Tauri
+/// serializes it as a JSON array of numbers (`[80, 75, 3, 4, …]`), which
+/// for a 10 MB docx becomes a ~30 MB JSON string. We have observed that
+/// path silently truncating large payloads, which surfaces as JSZip's
+/// "Can't find end of central directory" error in the editor (the EOCD
+/// record is the last 22 bytes of a zip file; if we lose the tail the
+/// whole archive is unparseable).
+///
+/// `tauri::ipc::Response::new(bytes)` instead sends raw octet-stream
+/// bytes to JS, where `invoke` resolves to an `ArrayBuffer`. No
+/// truncation, no JSON cost, and constant memory for the marshaling
+/// step.
 #[tauri::command]
-async fn load_document(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))
+async fn load_document(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Cheap existence check used by the launcher before opening a recent
@@ -243,6 +303,42 @@ async fn load_document(path: String) -> Result<Vec<u8>, String> {
 #[tauri::command]
 fn file_exists(path: String) -> bool {
     std::path::Path::new(&path).is_file()
+}
+
+/// Open the OS file manager pointed at the directory containing the
+/// given file. Matches the "Show in Finder" / "Show in File Explorer"
+/// affordance in every Office product.
+#[tauri::command]
+fn reveal_in_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    // If the file is missing, open the parent dir we *can* reach. If even
+    // that's missing, fall back to the user's home directory rather than
+    // failing the user invisibly.
+    let target = if p.is_file() {
+        p.parent().map(|q| q.to_path_buf())
+    } else if p.is_dir() {
+        Some(p.to_path_buf())
+    } else {
+        None
+    };
+    let target = target.unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+    });
+    let target_str = target.to_string_lossy().to_string();
+    #[cfg(target_os = "linux")]
+    let cmd = std::process::Command::new("xdg-open").arg(&target_str).spawn();
+    #[cfg(target_os = "macos")]
+    let cmd = std::process::Command::new("open").arg(&target_str).spawn();
+    #[cfg(target_os = "windows")]
+    let cmd = std::process::Command::new("explorer").arg(&target_str).spawn();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let cmd: Result<std::process::Child, std::io::Error> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "unsupported platform",
+    ));
+    cmd.map(|_| ()).map_err(|e| format!("open folder: {e}"))
 }
 
 #[tauri::command]
@@ -567,8 +663,10 @@ pub fn run() {
             clear_recent_files,
             add_recent_file,
             remove_recent_file,
+            set_recent_pinned,
             load_document,
             file_exists,
+            reveal_in_folder,
             save_document,
             save_document_as,
             is_first_run,
