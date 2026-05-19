@@ -21,7 +21,15 @@
             <span>Your name</span>
             <input id="wiz-name" type="text" placeholder="e.g. Sachin" autocomplete="off" />
           </label>
-          <p class="hint">Used as the author on documents you save. Stored locally; never sent anywhere.</p>
+          <label class="field">
+            <span>Email <em class="muted">(optional)</em></span>
+            <input id="wiz-email" type="email" placeholder="you@example.com" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Time zone</span>
+            <input id="wiz-tz" type="text" autocomplete="off" />
+          </label>
+          <p class="hint">Used as author metadata on documents you save. Stored locally; never sent anywhere.</p>
           <div class="wiz-actions">
             <button id="wiz-next-1" type="button" disabled>Continue</button>
           </div>
@@ -79,12 +87,82 @@
           <span class="brand-dot" aria-hidden="true"></span>
           <span>Casual Office</span>
         </div>
-        <div id="user-chip" class="user-chip" title="Profile">
+        <button id="user-chip" class="user-chip" title="Profile & settings" type="button">
           <span id="user-avatar" class="avatar"></span>
-        </div>
+          <span id="user-chip-name"></span>
+        </button>
       </header>
 
       <section id="panels" class="panels">
+        <!-- SETTINGS panel (toggled via the user chip) -->
+        <div id="settings-panel" class="panel settings-panel" hidden>
+          <div class="settings-head">
+            <h1>Profile &amp; settings</h1>
+            <button id="settings-close" class="link" type="button">← Back to home</button>
+          </div>
+
+          <section class="settings-section">
+            <h2>Profile</h2>
+            <div class="settings-row avatar-row">
+              <span id="settings-avatar" class="avatar avatar-lg"></span>
+              <div class="settings-row-meta">
+                <button id="settings-pick-avatar" class="secondary" type="button">Change picture…</button>
+                <button id="settings-remove-avatar" class="link" type="button">Remove</button>
+              </div>
+            </div>
+            <label class="field">
+              <span>Name</span>
+              <input id="settings-name" type="text" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Email <em class="muted">(optional)</em></span>
+              <input id="settings-email" type="email" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Time zone</span>
+              <input id="settings-tz" type="text" autocomplete="off" />
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <h2>Appearance</h2>
+            <div class="theme-grid" role="radiogroup" aria-label="Theme">
+              <label class="theme-card">
+                <input type="radio" name="settings-theme" value="system" />
+                <span class="theme-preview system"></span>
+                <span>System</span>
+              </label>
+              <label class="theme-card">
+                <input type="radio" name="settings-theme" value="light" />
+                <span class="theme-preview light"></span>
+                <span>Light</span>
+              </label>
+              <label class="theme-card">
+                <input type="radio" name="settings-theme" value="dark" />
+                <span class="theme-preview dark"></span>
+                <span>Dark</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h2>Files</h2>
+            <label class="field" for="settings-dir">
+              <span>Default save folder</span>
+            </label>
+            <div class="row">
+              <input id="settings-dir" type="text" readonly placeholder="(use system default)" />
+              <button id="settings-pick-dir" class="secondary" type="button">Choose…</button>
+              <button id="settings-clear-dir" class="link" type="button">Clear</button>
+            </div>
+          </section>
+
+          <div class="settings-actions">
+            <p id="settings-error" class="hint" style="color:#dc2626;"></p>
+            <button id="settings-save" type="button">Save changes</button>
+          </div>
+        </div>
+
         <div id="home-panel" class="panel home-panel">
           <div class="hero">
             <div class="hero-bg" aria-hidden="true">
@@ -152,6 +230,23 @@
           <footer id="status" class="status"></footer>
         </div>
       </section>
+    </div>
+
+    <!-- Open-choice modal: asks "this window or a new window?" -->
+    <div id="open-choice" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="open-choice-title">
+        <h2 id="open-choice-title">Open where?</h2>
+        <p class="sub" id="open-choice-sub">Choose how to open this document.</p>
+        <div class="modal-actions">
+          <button id="open-choice-same" type="button">This window</button>
+          <button id="open-choice-new" class="secondary" type="button">New window</button>
+        </div>
+        <label class="modal-remember">
+          <input id="open-choice-remember" type="checkbox" />
+          <span>Remember my choice</span>
+        </label>
+        <button id="open-choice-cancel" class="link" type="button">Cancel</button>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

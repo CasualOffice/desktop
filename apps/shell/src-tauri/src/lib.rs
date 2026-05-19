@@ -231,10 +231,23 @@ async fn save_document_as(
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Profile {
     name: String,
-    /// HSL hue (0–360) used by the UI to derive an avatar background color.
-    /// Stored rather than derived so changing the name later doesn't change
-    /// the avatar color.
+    /// HSL hue (0–360) used by the UI to derive an avatar background color
+    /// when there's no `avatar_path`. Stored rather than derived so changing
+    /// the name later doesn't change the avatar color.
     avatar_hue: u16,
+    /// IANA time zone (e.g. "America/New_York"). None = use system tz at
+    /// display time.
+    #[serde(default)]
+    timezone: Option<String>,
+    /// Optional email — not validated, not sent anywhere. Used as a hint
+    /// in document author fields if present.
+    #[serde(default)]
+    email: Option<String>,
+    /// Absolute path to a user-selected avatar image inside the app config
+    /// dir (we copy the original here so deleting the source doesn't break
+    /// the avatar).
+    #[serde(default)]
+    avatar_path: Option<String>,
     created_at: u64,
 }
 
@@ -297,10 +310,69 @@ fn save_profile(app: AppHandle, mut profile: Profile) -> Result<Profile, String>
     if profile.created_at == 0 {
         profile.created_at = now_secs();
     }
+    // Normalize optional fields — empty strings come over the wire as Some("")
+    // from the form; persist them as None.
+    profile.email = profile.email.and_then(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    });
+    profile.timezone = profile.timezone.and_then(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    });
     let path = profile_path(&app)?;
     let bytes = serde_json::to_vec_pretty(&profile).map_err(|e| e.to_string())?;
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(profile)
+}
+
+/// Open a native image picker, copy the chosen file into the app config
+/// dir as `avatar.<ext>`, and return the destination path. Returns Ok(None)
+/// if the user cancels. The caller is responsible for updating the profile
+/// to point at this path.
+#[tauri::command]
+async fn pick_avatar_image(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<PathBuf>>();
+    app.dialog()
+        .file()
+        .add_filter("Image", &["png", "jpg", "jpeg", "webp", "gif"])
+        .pick_file(move |p| {
+            let _ = tx.send(p.and_then(|fp| fp.into_path().ok()));
+        });
+    let chosen = rx.recv().map_err(|e| e.to_string())?;
+    let Some(src) = chosen else {
+        return Ok(None);
+    };
+    let ext = src
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let cfg_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("config dir: {e}"))?;
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+    let dst = cfg_dir.join(format!("avatar.{ext}"));
+    // Strip any older avatar files with different extensions so we have
+    // exactly one avatar on disk.
+    for stale_ext in ["png", "jpg", "jpeg", "webp", "gif"] {
+        let stale = cfg_dir.join(format!("avatar.{stale_ext}"));
+        if stale != dst && stale.exists() {
+            let _ = std::fs::remove_file(stale);
+        }
+    }
+    std::fs::copy(&src, &dst).map_err(|e| format!("copy avatar: {e}"))?;
+    Ok(Some(dst.to_string_lossy().to_string()))
+}
+
+/// Read an image file off disk and return its bytes — the launcher renders
+/// the avatar as a data: URL so we never expose raw filesystem paths to
+/// the webview's `src` attribute (Tauri's asset protocol works but needs
+/// per-asset capability; this is simpler for one small image).
+#[tauri::command]
+async fn read_avatar_bytes(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("read avatar {path}: {e}"))
 }
 
 #[tauri::command]
@@ -347,6 +419,8 @@ pub fn run() {
             is_first_run,
             get_profile,
             save_profile,
+            pick_avatar_image,
+            read_avatar_bytes,
             get_settings,
             save_settings,
         ])

@@ -18,12 +18,18 @@ interface RecentFile {
 interface Profile {
   name: string;
   avatar_hue: number;
+  timezone: string | null;
+  email: string | null;
+  avatar_path: string | null;
   created_at: number;
 }
 
 interface Settings {
   theme: 'system' | 'light' | 'dark';
   default_save_dir: string | null;
+  /** "ask" (show modal every time), "same", "new" — populated by the
+   *  "Remember my choice" checkbox in the open-where dialog. */
+  open_window_preference?: 'ask' | 'same' | 'new';
 }
 
 interface Tab {
@@ -427,22 +433,74 @@ function activeTab(): Tab | undefined {
 }
 
 function openOrReplaceLauncher(kind: DocKind, filePath: string | null) {
-  // One-window-per-document. Each opened doc gets its own native Tauri
-  // window with its own webview process — matches the speed and isolation
-  // of native Excel / Word / LibreOffice. The launcher itself stays open
-  // as the "home" window so the user can keep opening more documents.
+  const pref = state.settings.open_window_preference ?? 'ask';
+  if (pref === 'same') return doOpen(kind, filePath, 'same');
+  if (pref === 'new') return doOpen(kind, filePath, 'new');
+  askOpenChoice(kind, filePath);
+}
+
+function doOpen(kind: DocKind, filePath: string | null, where: 'same' | 'new') {
+  if (filePath) {
+    invoke('add_recent_file', { path: filePath }).catch(() => undefined);
+  }
+  if (where === 'same') {
+    const params = new URLSearchParams({ desk: '1' });
+    if (filePath) params.set('file', filePath);
+    // Navigate the launcher window to the editor. The user can use
+    // Alt+Left / Cmd+[ to return to the home screen.
+    window.location.href = `${kind}/index.html?${params.toString()}`;
+    return;
+  }
   invoke('open_document_window', { kind, filePath })
     .then(() => {
-      if (filePath) {
-        invoke('add_recent_file', { path: filePath }).catch(() => undefined);
-        refreshRecents();
-      }
+      refreshRecents();
       setStatus('');
     })
     .catch((err) => {
       console.error('open_document_window failed', err);
       setStatus(`Could not open: ${err}`);
     });
+}
+
+function askOpenChoice(kind: DocKind, filePath: string | null) {
+  const modal = $('open-choice');
+  const remember = $<HTMLInputElement>('open-choice-remember');
+  const sub = $('open-choice-sub');
+  const label = filePath ? filePath.split(/[\\/]/).pop() : kind === 'docx' ? 'New document' : 'New spreadsheet';
+  sub.textContent = label ? `Open “${label}” in:` : 'Open in:';
+  remember.checked = false;
+  modal.hidden = false;
+
+  const cleanup = () => {
+    modal.hidden = true;
+    sameBtn.removeEventListener('click', onSame);
+    newBtn.removeEventListener('click', onNew);
+    cancelBtn.removeEventListener('click', onCancel);
+  };
+  const persistIfRemembered = (choice: 'same' | 'new') => {
+    if (remember.checked) {
+      const next: Settings = { ...state.settings, open_window_preference: choice };
+      state.settings = next;
+      invoke('save_settings', { settings: next }).catch(() => undefined);
+    }
+  };
+  const sameBtn = $<HTMLButtonElement>('open-choice-same');
+  const newBtn = $<HTMLButtonElement>('open-choice-new');
+  const cancelBtn = $<HTMLButtonElement>('open-choice-cancel');
+  const onSame = () => {
+    persistIfRemembered('same');
+    cleanup();
+    doOpen(kind, filePath, 'same');
+  };
+  const onNew = () => {
+    persistIfRemembered('new');
+    cleanup();
+    doOpen(kind, filePath, 'new');
+  };
+  const onCancel = () => cleanup();
+  sameBtn.addEventListener('click', onSame);
+  newBtn.addEventListener('click', onNew);
+  cancelBtn.addEventListener('click', onCancel);
 }
 
 // =============================================================================
@@ -573,11 +631,28 @@ function bindShortcuts() {
 type WizardState = {
   step: 1 | 2 | 3;
   name: string;
+  email: string;
+  timezone: string;
   theme: Settings['theme'];
   dir: string | null;
 };
 
-const wiz: WizardState = { step: 1, name: '', theme: 'system', dir: null };
+const wiz: WizardState = {
+  step: 1,
+  name: '',
+  email: '',
+  timezone: detectTimezone(),
+  theme: 'system',
+  dir: null,
+};
+
+function detectTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+}
 
 function showWizardStep(n: 1 | 2 | 3) {
   wiz.step = n;
@@ -590,10 +665,20 @@ function showWizardStep(n: 1 | 2 | 3) {
 
 function bindWizard() {
   const nameInput = $<HTMLInputElement>('wiz-name');
+  const emailInput = $<HTMLInputElement>('wiz-email');
+  const tzInput = $<HTMLInputElement>('wiz-tz');
   const next1 = $<HTMLButtonElement>('wiz-next-1');
+  // Prefill timezone with the system value; user can edit.
+  tzInput.value = wiz.timezone;
   nameInput.addEventListener('input', () => {
     wiz.name = nameInput.value;
     next1.disabled = wiz.name.trim().length === 0;
+  });
+  emailInput.addEventListener('input', () => {
+    wiz.email = emailInput.value;
+  });
+  tzInput.addEventListener('input', () => {
+    wiz.timezone = tzInput.value;
   });
   next1.addEventListener('click', () => showWizardStep(2));
 
@@ -628,6 +713,9 @@ async function finishWizard() {
     const profile: Profile = {
       name: wiz.name.trim(),
       avatar_hue: hashHue(wiz.name.trim().toLowerCase()),
+      timezone: wiz.timezone.trim() || null,
+      email: wiz.email.trim() || null,
+      avatar_path: null,
       created_at: 0,
     };
     const settings: Settings = {
@@ -676,15 +764,152 @@ function revealWorkspace() {
   $('wizard').hidden = true;
   $('workspace').hidden = false;
   if (state.profile) {
-    const avatar = $<HTMLSpanElement>('user-avatar');
-    avatar.textContent = initials(state.profile.name);
-    avatar.style.backgroundColor = `hsl(${state.profile.avatar_hue}, 55%, 50%)`;
+    renderAvatar($<HTMLSpanElement>('user-avatar'), state.profile);
+    const chipName = document.getElementById('user-chip-name');
+    if (chipName) chipName.textContent = state.profile.name.split(/\s+/)[0];
     const greet = $('greeting');
     const hr = new Date().getHours();
     const partOfDay = hr < 5 ? 'Working late' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
     greet.textContent = `${partOfDay}, ${state.profile.name.split(/\s+/)[0]}`;
   }
   refreshRecents();
+}
+
+const avatarDataUrlCache = new Map<string, string>();
+
+async function renderAvatar(el: HTMLElement, profile: Profile) {
+  el.style.backgroundImage = '';
+  el.textContent = '';
+  if (profile.avatar_path) {
+    try {
+      let dataUrl = avatarDataUrlCache.get(profile.avatar_path);
+      if (!dataUrl) {
+        const bytes = await invoke<number[]>('read_avatar_bytes', { path: profile.avatar_path });
+        const ext = profile.avatar_path.split('.').pop()?.toLowerCase() ?? 'png';
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+          : ext === 'webp' ? 'image/webp'
+          : ext === 'gif' ? 'image/gif'
+          : 'image/png';
+        // btoa needs a binary string; chunk to avoid call-stack overflow.
+        let bin = '';
+        const arr = Uint8Array.from(bytes);
+        for (let i = 0; i < arr.length; i += 0x8000) {
+          bin += String.fromCharCode.apply(null, Array.from(arr.subarray(i, i + 0x8000)));
+        }
+        dataUrl = `data:${mime};base64,${btoa(bin)}`;
+        avatarDataUrlCache.set(profile.avatar_path, dataUrl);
+      }
+      el.style.backgroundImage = `url("${dataUrl}")`;
+      el.style.backgroundSize = 'cover';
+      el.style.backgroundPosition = 'center';
+      el.style.backgroundColor = 'transparent';
+      return;
+    } catch (err) {
+      console.warn('avatar read failed', err);
+    }
+  }
+  el.textContent = initials(profile.name);
+  el.style.backgroundColor = `hsl(${profile.avatar_hue}, 55%, 50%)`;
+}
+
+// ---------- Settings panel -------------------------------------------------
+
+function showSettings() {
+  $('home-panel').hidden = true;
+  $('settings-panel').hidden = false;
+  populateSettings();
+}
+
+function hideSettings() {
+  $('settings-panel').hidden = true;
+  $('home-panel').hidden = false;
+  $('settings-error').textContent = '';
+}
+
+function populateSettings() {
+  if (!state.profile) return;
+  renderAvatar($('settings-avatar'), state.profile);
+  $<HTMLInputElement>('settings-name').value = state.profile.name;
+  $<HTMLInputElement>('settings-email').value = state.profile.email ?? '';
+  $<HTMLInputElement>('settings-tz').value = state.profile.timezone ?? detectTimezone();
+  $<HTMLInputElement>('settings-dir').value = state.settings.default_save_dir ?? '';
+  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-theme]')) {
+    radio.checked = radio.value === state.settings.theme;
+  }
+}
+
+function bindSettings() {
+  $('user-chip').addEventListener('click', showSettings);
+  $('settings-close').addEventListener('click', hideSettings);
+
+  $('settings-pick-avatar').addEventListener('click', async () => {
+    try {
+      const newPath = await invoke<string | null>('pick_avatar_image');
+      if (!newPath || !state.profile) return;
+      const next: Profile = { ...state.profile, avatar_path: newPath };
+      state.profile = await invoke<Profile>('save_profile', { profile: next });
+      avatarDataUrlCache.delete(newPath);
+      await renderAvatar($('settings-avatar'), state.profile);
+      await renderAvatar($('user-avatar'), state.profile);
+    } catch (err) {
+      $('settings-error').textContent = `Could not set picture: ${err}`;
+    }
+  });
+
+  $('settings-remove-avatar').addEventListener('click', async () => {
+    if (!state.profile?.avatar_path) return;
+    const next: Profile = { ...state.profile, avatar_path: null };
+    try {
+      state.profile = await invoke<Profile>('save_profile', { profile: next });
+      await renderAvatar($('settings-avatar'), state.profile);
+      await renderAvatar($('user-avatar'), state.profile);
+    } catch (err) {
+      $('settings-error').textContent = `Could not remove picture: ${err}`;
+    }
+  });
+
+  $('settings-pick-dir').addEventListener('click', async () => {
+    const picked = await open({ directory: true, multiple: false });
+    if (typeof picked === 'string') $<HTMLInputElement>('settings-dir').value = picked;
+  });
+  $('settings-clear-dir').addEventListener('click', () => {
+    $<HTMLInputElement>('settings-dir').value = '';
+  });
+
+  $('settings-save').addEventListener('click', async () => {
+    if (!state.profile) return;
+    $('settings-error').textContent = '';
+    const name = $<HTMLInputElement>('settings-name').value.trim();
+    if (!name) {
+      $('settings-error').textContent = 'Name is required.';
+      return;
+    }
+    const themeRadio = document.querySelector<HTMLInputElement>('input[name=settings-theme]:checked');
+    const theme = (themeRadio?.value as Settings['theme']) ?? 'system';
+    const dir = $<HTMLInputElement>('settings-dir').value.trim() || null;
+    const updatedProfile: Profile = {
+      ...state.profile,
+      name,
+      email: $<HTMLInputElement>('settings-email').value,
+      timezone: $<HTMLInputElement>('settings-tz').value,
+    };
+    const updatedSettings: Settings = {
+      ...state.settings,
+      theme,
+      default_save_dir: dir,
+    };
+    try {
+      state.profile = await invoke<Profile>('save_profile', { profile: updatedProfile });
+      state.settings = await invoke<Settings>('save_settings', { settings: updatedSettings });
+      applyTheme(state.settings.theme);
+      await renderAvatar($('user-avatar'), state.profile);
+      const chipName = document.getElementById('user-chip-name');
+      if (chipName) chipName.textContent = state.profile.name.split(/\s+/)[0];
+      hideSettings();
+    } catch (err) {
+      $('settings-error').textContent = `Could not save: ${err}`;
+    }
+  });
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -697,6 +922,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 async function boot() {
   bindWizard();
   bindHomePanel();
+  bindSettings();
   bindTabBar();
   bindShortcuts();
   bindBridgeRouter();
