@@ -4,6 +4,11 @@ build/
 target/
 *.log
 
+# Playwright
+playwright-report/
+test-results/
+/apps/shell/playwright/.cache/
+
 # Upstream editor repos are cloned in-tree but versioned separately
 # (each has its own .git/). Treat as external dependencies.
 /docx/
