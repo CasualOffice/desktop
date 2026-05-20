@@ -58,9 +58,11 @@ jobs:
             patchelf
 
       - name: Setup Node + pnpm
+        # No `version:` here on purpose — pnpm/action-setup@v4 picks
+        # up the version from package.json's `packageManager` field
+        # (pnpm@9.15.9). Specifying both causes ERR_PNPM_BAD_PM_VERSION.
         uses: pnpm/action-setup@v4
         with:
-          version: 9
           run_install: false
 
       - name: Setup Node 20
