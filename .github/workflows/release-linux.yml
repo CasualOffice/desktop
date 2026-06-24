@@ -102,16 +102,24 @@ jobs:
             https://github.com/CasualOffice/docs.git docx
           (cd docx/docx-editor && bun install)
 
-      - name: Clone sheets editor at no-cdn-fonts branch
+      - name: Clone sheets editor (main, with Univer fork submodules)
         run: |
-          git clone --depth 1 --branch desk_v0.0.0/no-cdn-fonts \
+          # Build from main now — desk_v0.0.0/no-cdn-fonts is superseded. main
+          # resolves @univerjs/* to the vendored Univer fork via pnpm overrides,
+          # so the submodules must be present and the fork built (setup-fork.sh)
+          # before install. .gitmodules uses SSH URLs; rewrite to HTTPS so the
+          # public fork repos clone without a deploy key.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --recurse-submodules --shallow-submodules --branch main \
             https://github.com/CasualOffice/sheets.git sheets
-          # `--no-frozen-lockfile` is required because pnpm v9 enables
-          # frozen-lockfile by default whenever CI=true (GitHub Actions
-          # sets it). The sheets lockfile is out of sync with the
-          # `patchedDependencies` block added during the upstream main
-          # merge — pnpm reconciles cleanly given permission to write.
-          (cd sheets && pnpm install --no-frozen-lockfile)
+          cd sheets
+          # Build + swap the Univer fork package.jsons to lib/ (matches sheets CI).
+          ./scripts/setup-fork.sh
+          # --no-frozen-lockfile: pnpm v9 forces frozen under CI=true; tolerate
+          # small lockfile drift so a release isn't gated on it.
+          pnpm install --no-frozen-lockfile
+          # apps/web imports the SDK's built dist — build it before the app.
+          pnpm --filter @casualoffice/sheets build
 
       - name: Build docx editor
         working-directory: docx/docx-editor/examples/vite
@@ -119,7 +127,10 @@ jobs:
 
       - name: Build sheets editor
         working-directory: sheets/apps/web
-        run: pnpm build
+        # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
+        # in the Tauri shell. main's `build` script omits --base by design (the
+        # web deploy needs an absolute base for SPA sub-routes), so pass it here.
+        run: pnpm exec vite build --base=./
 
       - name: Install shell deps
         # Same reason as the sheets install: keep CI tolerant of small
