@@ -27,6 +27,14 @@ rm -rf "$PUBLIC/docx" "$PUBLIC/sheets"
 cp -R "$DOCX_DIST" "$PUBLIC/docx"
 cp -R "$SHEETS_DIST" "$PUBLIC/sheets"
 
+# Offline fonts for the desktop build. The sheets bootstrap declares @font-face
+# at ./fonts/ (relative to /sheets/) only when isDesktop(); the web build uses
+# the Google Fonts CDN and ships no woff2, so we supply them here. Without this
+# the desktop app falls back to system fonts when offline.
+mkdir -p "$PUBLIC/sheets/fonts"
+cp "$(pwd)/assets/fonts/"*.woff2 "$PUBLIC/sheets/fonts/"
+
 echo "Editors copied:"
 echo "  $PUBLIC/docx (from $DOCX_DIST)"
 echo "  $PUBLIC/sheets (from $SHEETS_DIST)"
+echo "  $PUBLIC/sheets/fonts (from $(pwd)/assets/fonts)"
