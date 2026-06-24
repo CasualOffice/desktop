@@ -146,7 +146,7 @@ else there is upstream code.
 | `docx/docx-editor/examples/vite/src/desk-bridge-bootstrap.ts` | New file — defines `window.__deskApp__` |
 | `docx/docx-editor/examples/vite/src/App.tsx` | Initial-load `useEffect` reads `bridge.filePath` and calls `loadDocument`; `handleSave` / `handleSaveAs` route through the bridge when `bridge?.isDesktop` |
 | `sheets/apps/web/src/main.tsx` | Same first-import line |
-| `sheets/apps/web/src/desk-bridge-bootstrap.ts` | New file — mirror of docx, plus a red error-overlay that pins runtime errors to the top of the iframe |
+| `sheets/apps/web/src/desk-bridge-bootstrap.ts` | New file — mirror of docx, plus a red error-overlay that pins runtime errors to the top of the document window |
 | `sheets/apps/web/src/App.tsx` | `useEffect` calls `bridge.loadDocument` → format-specific parser (xlsx / ods / csv / tsv) → `replaceWorkbook`; `replaceWorkbook` skips its 2-macrotask `snapshotRef` GC when `window.__deskApp__?.isDesktop` (was racing React 18 concurrent rendering and producing a blank canvas) |
 
 These changes are additive and gated on `?desk=1` in the URL — the editors

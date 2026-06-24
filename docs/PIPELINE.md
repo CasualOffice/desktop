@@ -83,74 +83,50 @@ invoke('is_first_run')  → true → show wizard
                         → false → load profile + settings → show launcher
 ```
 
-### Open document (no existing tab)
+### Open a document
+
+Each document opens in its **own** Tauri window / webview process — no tabs,
+no iframes, no shared launcher process. The launcher window stays open as the
+home base.
+
 ```
-User clicks "Open file" card or Recent entry
+User clicks "Open file" / a Recent entry / "New document" / "New spreadsheet"
    ↓
-JS: open() dialog (tauri-plugin-dialog)  → file path
+JS (launcher): openOrReplaceLauncher(kind, filePath)
+   - "Open file" first runs the dialog plugin to get a path
+   - records the path in recents (when there is one)
    ↓
-JS: openOrReplaceLauncher('docx'|'sheets', path)
+JS: invoke('open_document_window', { kind, filePath })
    ↓
-   if path already open in a tab → activate that tab, return
-   else if active tab is launcher → replace it
-   else → push new tab
+Rust: WebviewWindowBuilder::new(label='doc-N',
+        url='<kind>/index.html?desk=1[&file=…]')  → a NEW OS window
    ↓
-JS: openDocumentInTab() creates <iframe src="<kind>/index.html?desk=1&file=…">
+That window loads the editor's index.html from the embedded dist
    ↓
-Tauri serves the editor's index.html from the embedded dist
+Editor JS executes (TOP-LEVEL Tauri mode — no iframe, no postMessage hop):
+   1. desk-bridge-bootstrap.ts defines window.__deskApp__, wired straight to
+      window.__TAURI__.core.invoke
+   2. main.tsx mounts the editor
+   3. App.tsx reads window.__deskApp__.filePath
+   4. bridge.loadDocument() → invoke('load_document', { path })
    ↓
-Editor JS executes:
-   1. desk-bridge-bootstrap.ts defines window.__deskApp__
-   2. main.tsx mounts React
-   3. App.tsx useEffect reads window.__deskApp__.filePath
-   4. bridge.loadDocument() → postMessage to parent
+Rust: std::fs::read(path)  → Vec<u8>  → returned to the editor
    ↓
-Parent's message router:
-   tabForSource(event.source) → tab
-   invoke('load_document', { path: tab.filePath })
-   ↓
-Rust: std::fs::read(path)  → Vec<u8>
-   ↓
-Parent posts {kind:'reply', result: bytes} back to iframe
-   ↓
-Editor parses bytes (DOCX → ProseMirror | XLSX → IWorkbookData)
-   ↓
-Editor renders
+Editor parses bytes (DOCX → ProseMirror | XLSX → IWorkbookData) and renders
 ```
 
 ### Save
 ```
-User hits Cmd/Ctrl-S in the editor
+User hits Cmd/Ctrl-S (or File → Save) in the editor
    ↓
-Editor's onSave callback → bridge.save(buffer)
+Editor's onSave(buffer) → bridge.save(buffer)   [direct invoke — no parent]
    ↓
    if bridge.filePath set:
-     postMessage 'save' → parent invokes save_document
-     Rust: std::fs::write(path, bytes)  → reply
+     invoke('save_document', { path, bytes })  → Rust std::fs::write
    else (untitled / new doc):
-     postMessage 'save' → parent calls save_document_as
-     OS native save dialog → user picks path
-     Rust: std::fs::write(picked_path, bytes)  → reply path
-     bridge.filePath ← picked_path  (so next Save just overwrites)
-```
-
-### Detach tab → new window
-```
-User drags a tab below the strip
-   ↓
-dragend handler: rect.bottom + 100px < e.clientY  → detach
-   ↓
-invoke('open_document_window', { kind, filePath })
-   ↓
-Rust: WebviewWindowBuilder::new(label='doc-N', url='<kind>/index.html?desk=1&file=…')
-   ↓
-New OS window opens, loads editor
-   ↓
-Inside that window: bootstrap detects window.parent === window (top-level)
-   ↓
-Bridge uses window.__TAURI__.core.invoke directly (no parent to postMessage)
-   ↓
-Original launcher tab is closed; the new window owns that document now
+     invoke('save_document_as', { suggestedName, bytes })
+       → OS native save dialog → user picks a path → Rust std::fs::write
+       → bridge.filePath ← picked path (so the next Save just overwrites)
 ```
 
 ## Release pipeline (future — not yet wired)

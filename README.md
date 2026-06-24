@@ -4,8 +4,8 @@ A single-user, cross-platform desktop editor for `.docx` and `.xlsx` files,
 built by wrapping two browser-based editor codebases inside a Tauri 2
 shell.
 
-- **`.docx`** rendered by [`eigenpal/docx-editor`](https://github.com/CasualOffice/docs)
-  (Apache-2.0, React + ProseMirror with full OOXML fidelity)
+- **`.docx`** rendered by the [Casual Office docx editor](https://github.com/CasualOffice/docs)
+  (MIT — a fork of `eigenpal/docx-editor`; React + ProseMirror with full OOXML fidelity)
 - **`.xlsx`** rendered by [Univer OSS](https://github.com/dream-num/univer)
   (Apache-2.0, canvas grid + formula engine)
 - **Shell** is a small Tauri 2 app (Rust + a vanilla-TS launcher) — system
@@ -13,8 +13,8 @@ shell.
   Windows, and macOS
 
 Files are read from disk and saved back natively — no browser-style "download"
-flow. Each open document gets its own tab; tabs can be dragged out into a
-separate OS window (Chrome-style).
+flow. Each open document gets **its own OS window** (its own webview process,
+like native Word/Excel) — no tabs, no shared process.
 
 ## Quick start (Linux)
 
@@ -37,7 +37,7 @@ Clone, build, run:
 
 ```bash
 git clone https://github.com/CasualOffice/desktop.git
-cd casual-office
+cd desktop
 
 # One-time: clone the two editor source repos in-tree.
 git clone https://github.com/CasualOffice/docs.git
@@ -113,4 +113,4 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full breakdown,
 ## License
 
 Casual Office shell: Apache-2.0.
-Upstream editors keep their own licenses (docx-editor Apache-2.0, Univer Apache-2.0).
+Upstream editors keep their own licenses (docx editor MIT, Univer Apache-2.0).
