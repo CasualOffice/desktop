@@ -1,0 +1,4 @@
+/* Casual Office design system — single stylesheet entry.
+   Import this once in your app root: `import 'casual-office-ui/styles.css'`. */
+@import './tokens.css';
+@import './components.css';

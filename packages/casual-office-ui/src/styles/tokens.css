@@ -1,0 +1,68 @@
+/* =============================================================================
+ * Casual Office — design tokens
+ * Light + dark, switched via `data-theme` on the document root (or :root scope).
+ * These are the single source of color, surface, shadow, and radius truth for
+ * every component in the library.
+ * ========================================================================== */
+:root {
+  color-scheme: light dark;
+  --co-font-sans: -apple-system, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --co-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --co-bg: #f5f6f8;
+  --co-surface: #ffffff;
+  --co-surface-2: #fafbfc;
+  --co-fg: #1c1c1e;
+  --co-muted: rgba(0, 0, 0, 0.58);
+  --co-subtle: rgba(0, 0, 0, 0.04);
+  --co-line: rgba(0, 0, 0, 0.08);
+  --co-tile: rgba(0, 0, 0, 0.035);
+  --co-tile-hover: rgba(0, 0, 0, 0.07);
+
+  --co-accent: #2563eb;
+  --co-accent-fg: #ffffff;
+  --co-docx: #2563eb;
+  --co-sheets: #1e7a4f;
+  --co-warn: #f59e0b;
+  --co-success: #16a34a;
+  --co-danger: #dc2626;
+
+  --co-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.02);
+  --co-shadow-2: 0 6px 24px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(0, 0, 0, 0.04);
+
+  --co-radius: 12px;
+  --co-radius-sm: 8px;
+  --co-radius-lg: 18px;
+}
+
+:root[data-theme='dark'],
+[data-theme='dark'] {
+  --co-bg: #0f1115;
+  --co-surface: #15171c;
+  --co-surface-2: #181a20;
+  --co-fg: #ecedf1;
+  --co-muted: rgba(255, 255, 255, 0.6);
+  --co-subtle: rgba(255, 255, 255, 0.04);
+  --co-line: rgba(255, 255, 255, 0.09);
+  --co-tile: rgba(255, 255, 255, 0.05);
+  --co-tile-hover: rgba(255, 255, 255, 0.09);
+  --co-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --co-shadow-2: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'],
+  [data-theme='system'] {
+    --co-bg: #0f1115;
+    --co-surface: #15171c;
+    --co-surface-2: #181a20;
+    --co-fg: #ecedf1;
+    --co-muted: rgba(255, 255, 255, 0.6);
+    --co-subtle: rgba(255, 255, 255, 0.04);
+    --co-line: rgba(255, 255, 255, 0.09);
+    --co-tile: rgba(255, 255, 255, 0.05);
+    --co-tile-hover: rgba(255, 255, 255, 0.09);
+    --co-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --co-shadow-2: 0 8px 28px rgba(0, 0, 0, 0.45);
+  }
+}

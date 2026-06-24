@@ -31,3 +31,11 @@ test-results/
 /apps/shell/src-tauri/target/
 /apps/shell/src-tauri/gen/
 .claude/
+
+# design-sync staging + generated output (skill scripts, bundle, machine state)
+/.ds-sync/
+/ds-bundle/
+/.design-sync/.cache/
+/.design-sync/learnings/
+/.design-sync/node_modules
+/packages/casual-office-ui/demo-dist/
