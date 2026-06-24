@@ -121,12 +121,11 @@ jobs:
 
       - name: Build sheets editor
         working-directory: sheets/apps/web
-        # PAGES_BASE forces Vite's `base` to './' (relative) so the bundle
-        # resolves /sheets/assets/… and not /assets/… (which 404s → blank
-        # editor). vite.config reads `process.env.PAGES_BASE ?? '/'`.
-        env:
-          PAGES_BASE: './'
-        run: pnpm build
+        # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
+        # in the Tauri shell. main's `build` script omits --base by design (the
+        # web deploy needs an absolute base for SPA sub-routes), so pass it here.
+        # The "Verify editor asset paths are relative" step below guards this.
+        run: pnpm exec vite build --base=./
 
       - name: Install shell deps
         run: pnpm install --no-frozen-lockfile
