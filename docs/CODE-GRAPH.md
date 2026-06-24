@@ -20,8 +20,8 @@ casual-office/
 │   ├── BUILD.md
 │   └── CODE-GRAPH.md
 │
-├── docx/                      ← gitignored — clone of github.com/schnsrw/docx
-├── sheets/                    ← gitignored — clone of github.com/schnsrw/sheets
+├── docx/                      ← gitignored — clone of github.com/CasualOffice/docs
+├── sheets/                    ← gitignored — clone of github.com/CasualOffice/sheets
 │
 └── apps/
     └── shell/                 ← the Tauri app

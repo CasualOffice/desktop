@@ -11,9 +11,9 @@ from the user's filesystem through native OS dialogs.
 
 The two editor codebases are **separate git repos**, cloned in-tree:
 
-- `docx/` — `github.com/schnsrw/docx` (fork of `eigenpal/docx-editor`, MIT,
+- `docx/` — `github.com/CasualOffice/docs` (fork of `eigenpal/docx-editor`, MIT,
   React + ProseMirror)
-- `sheets/` — `github.com/schnsrw/sheets` (Univer OSS-based, Apache-2.0)
+- `sheets/` — `github.com/CasualOffice/sheets` (Univer OSS-based, Apache-2.0)
 
 Both are listed in `.gitignore` for this repo — they are external
 dependencies versioned separately.

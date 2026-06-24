@@ -87,7 +87,7 @@ jobs:
       - name: Clone docx editor at bridge-wiring branch
         run: |
           git clone --depth 1 --branch desk_v0.0.0/bridge-wiring \
-            https://github.com/schnsrw/docx.git docx
+            https://github.com/CasualOffice/docs.git docx
           (cd docx/docx-editor && bun install)
 
       - name: Clone sheets editor at no-cdn-fonts branch
@@ -97,7 +97,7 @@ jobs:
         # the `patchedDependencies` block after the upstream main merge.
         run: |
           git clone --depth 1 --branch desk_v0.0.0/no-cdn-fonts \
-            https://github.com/schnsrw/sheets.git sheets
+            https://github.com/CasualOffice/sheets.git sheets
           (cd sheets && pnpm install --no-frozen-lockfile)
 
       - name: Build docx editor

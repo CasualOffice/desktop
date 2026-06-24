@@ -47,12 +47,12 @@ WKWebView is part of macOS — no extra system deps.
 
 ```bash
 # Clone Casual Office
-git clone https://github.com/schnsrw/casual-office.git
+git clone https://github.com/CasualOffice/desktop.git
 cd casual-office
 
 # Clone the two editor source repos in-tree (separate origins, gitignored here)
-git clone https://github.com/schnsrw/docx.git
-git clone https://github.com/schnsrw/sheets.git
+git clone https://github.com/CasualOffice/docs.git
+git clone https://github.com/CasualOffice/sheets.git
 
 # Install workspace deps + build both editor bundles + copy them into the shell
 pnpm install
