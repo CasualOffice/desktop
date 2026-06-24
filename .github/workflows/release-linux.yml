@@ -97,13 +97,13 @@ jobs:
       - name: Clone docx editor at bridge-wiring branch
         run: |
           git clone --depth 1 --branch desk_v0.0.0/bridge-wiring \
-            https://github.com/schnsrw/docx.git docx
+            https://github.com/CasualOffice/docs.git docx
           (cd docx/docx-editor && bun install)
 
       - name: Clone sheets editor at no-cdn-fonts branch
         run: |
           git clone --depth 1 --branch desk_v0.0.0/no-cdn-fonts \
-            https://github.com/schnsrw/sheets.git sheets
+            https://github.com/CasualOffice/sheets.git sheets
           # `--no-frozen-lockfile` is required because pnpm v9 enables
           # frozen-lockfile by default whenever CI=true (GitHub Actions
           # sets it). The sheets lockfile is out of sync with the

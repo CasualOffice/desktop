@@ -4,7 +4,7 @@ A single-user, cross-platform desktop editor for `.docx` and `.xlsx` files,
 built by wrapping two browser-based editor codebases inside a Tauri 2
 shell.
 
-- **`.docx`** rendered by [`eigenpal/docx-editor`](https://github.com/schnsrw/docx)
+- **`.docx`** rendered by [`eigenpal/docx-editor`](https://github.com/CasualOffice/docs)
   (Apache-2.0, React + ProseMirror with full OOXML fidelity)
 - **`.xlsx`** rendered by [Univer OSS](https://github.com/dream-num/univer)
   (Apache-2.0, canvas grid + formula engine)
@@ -36,12 +36,12 @@ Toolchain:
 Clone, build, run:
 
 ```bash
-git clone https://github.com/schnsrw/casual-office.git
+git clone https://github.com/CasualOffice/desktop.git
 cd casual-office
 
 # One-time: clone the two editor source repos in-tree.
-git clone https://github.com/schnsrw/docx.git
-git clone https://github.com/schnsrw/sheets.git
+git clone https://github.com/CasualOffice/docs.git
+git clone https://github.com/CasualOffice/sheets.git
 
 # Build both editor bundles and copy them into apps/shell/public/.
 pnpm install
