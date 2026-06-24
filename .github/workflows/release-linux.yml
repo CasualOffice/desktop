@@ -119,6 +119,13 @@ jobs:
 
       - name: Build sheets editor
         working-directory: sheets/apps/web
+        # PAGES_BASE forces Vite's `base` to './' (relative). The editor
+        # mounts under /sheets/ in the desktop bundle; without a relative
+        # base the bundle's <script src="/assets/…"> resolves at the app
+        # root and 404s → a blank editor window. vite.config reads
+        # `process.env.PAGES_BASE ?? '/'`.
+        env:
+          PAGES_BASE: './'
         run: pnpm build
 
       - name: Install shell deps
@@ -131,6 +138,25 @@ jobs:
       - name: Copy editor dists into shell
         working-directory: apps/shell
         run: ./scripts/copy-editors.sh
+
+      - name: Verify editor asset paths are relative
+        # Guard against the #1 desktop-bundle failure: an editor built
+        # without a relative base ships index.html referencing /assets/…
+        # at the app root, which 404s under /docx/ or /sheets/ and leaves
+        # a blank editor window. Fail the release here, loudly, instead of
+        # shipping a broken build.
+        run: |
+          fail=0
+          for ed in docx sheets; do
+            if grep -Eq '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html"; then
+              echo "ERROR: $ed editor has absolute asset paths (build with --base=./ / PAGES_BASE=./)" >&2
+              grep -E '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html" >&2
+              fail=1
+            fi
+          done
+          if [ -f apps/shell/public/logo.svg ]; then echo "root logo.svg present"; else echo "WARN: root logo.svg missing"; fi
+          [ "$fail" = "0" ] && echo "OK: docx + sheets bundles use relative asset paths."
+          exit $fail
 
       - name: Build shell (vite)
         working-directory: apps/shell

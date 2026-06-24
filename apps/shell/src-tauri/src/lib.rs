@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::DialogExt;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 static WINDOW_SEQ: AtomicU32 = AtomicU32::new(0);
 const MAX_RECENTS: usize = 20;
@@ -31,7 +33,11 @@ impl DocKind {
     }
     fn from_path(path: &str) -> Option<Self> {
         let lower = path.to_lowercase();
-        if lower.ends_with(".docx") {
+        if lower.ends_with(".docx")
+            || lower.ends_with(".txt")
+            || lower.ends_with(".md")
+            || lower.ends_with(".markdown")
+        {
             Some(DocKind::Docx)
         } else if lower.ends_with(".xlsx")
             || lower.ends_with(".xlsm")
@@ -65,6 +71,38 @@ struct RecentsState {
     list: Mutex<Vec<RecentFile>>,
 }
 
+/// Tracks in-progress chunked saves. Maps the *real* destination path the
+/// editor asked to save to → the sibling temp file we're actually writing
+/// into. The save contract is:
+///   begin_save_document(path) → write_save_chunk(path, …)* → commit_save_document(path)
+/// begin truncates/creates the temp file; write_save_chunk appends into it;
+/// commit fsyncs and atomically renames temp → path. Writing into a temp
+/// sibling and renaming only on commit means a failed/aborted save never
+/// corrupts or truncates the user's existing file.
+#[derive(Default)]
+struct SaveState {
+    /// real path → temp path currently being written.
+    in_progress: Mutex<HashMap<String, PathBuf>>,
+}
+
+/// Per-window unsaved-changes flag. Keyed by the Tauri window label
+/// (e.g. "doc-3"). The editor reports edits/saves via `set_window_dirty`;
+/// the window-close guard reads it to decide whether to confirm before
+/// closing. Absent/false means clean → close freely.
+#[derive(Default)]
+struct DirtyState {
+    flags: Mutex<HashMap<String, bool>>,
+}
+
+/// Deterministic temp path for a chunked save: a sibling of the real file
+/// so the final rename stays on the same filesystem (rename across mounts
+/// is not atomic and can fail with EXDEV).
+fn save_temp_path(path: &str) -> PathBuf {
+    let mut s = path.to_string();
+    s.push_str(".casualoffice.tmp");
+    PathBuf::from(s)
+}
+
 fn recents_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -82,7 +120,19 @@ fn load_recents(app: &AppHandle) -> Vec<RecentFile> {
     let Ok(bytes) = std::fs::read(&path) else {
         return Vec::new();
     };
-    serde_json::from_slice::<Vec<RecentFile>>(&bytes).unwrap_or_default()
+    match serde_json::from_slice::<Vec<RecentFile>>(&bytes) {
+        Ok(list) => list,
+        Err(e) => {
+            // A corrupt recents file used to silently default to empty,
+            // making the data loss invisible. Surface it on stderr so it's
+            // diagnosable from the app logs.
+            eprintln!(
+                "recents: failed to parse {}: {e}; starting with an empty list",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 fn save_recents(app: &AppHandle, list: &[RecentFile]) -> Result<(), String> {
@@ -160,7 +210,12 @@ fn touch_recent(app: &AppHandle, state: &RecentsState, path: &str) {
     if list.len() > MAX_RECENTS {
         let mut kept: Vec<RecentFile> = Vec::with_capacity(MAX_RECENTS);
         // Pinned first (preserve order), then most-recent unpinned to fill.
+        // Cap the pinned loop too: if the user has pinned more than
+        // MAX_RECENTS files, we still must not blow past the cap.
         for r in list.iter().filter(|r| r.pinned) {
+            if kept.len() >= MAX_RECENTS {
+                break;
+            }
             kept.push(r.clone());
         }
         for r in list.iter().filter(|r| !r.pinned) {
@@ -225,7 +280,9 @@ async fn open_document_window(
                         let _ = window.show();
                         let _ = window.unminimize();
                         let _ = window.set_focus();
-                        touch_recent(&app, &state, p);
+                        // Merely re-focusing an already-open window must NOT
+                        // re-timestamp the recents entry — the document
+                        // wasn't actually (re)opened.
                         return Ok(label.to_string());
                     }
                 }
@@ -257,6 +314,12 @@ async fn open_document_window(
         url.push_str("&file=");
         url.push_str(&urlencoding_lite(p));
     }
+    // Carry the launcher's theme preference so the editor window opens in
+    // the right mode immediately, rather than flashing the default and
+    // waiting for the first `deskapp://theme` broadcast.
+    let theme = get_settings(app.clone()).theme;
+    url.push_str("&theme=");
+    url.push_str(&urlencoding_lite(&theme));
 
     // The editor's own `desk-bridge-bootstrap.ts` runs as the first import
     // inside the new window; it defines window.__deskApp__ using either
@@ -278,11 +341,80 @@ async fn open_document_window(
         let _ = window.set_content_protected(true);
     }
 
+    attach_unsaved_guard(&app, &window);
+
     if let Some(p) = file_path.as_deref() {
         touch_recent(&app, &state, p);
     }
 
     Ok(title)
+}
+
+/// Attach a CloseRequested handler that prevents accidental data loss: if
+/// the editor has reported unsaved changes for this window (via
+/// set_window_dirty), intercept the close, ask the user with a native
+/// dialog, and only destroy the window if they confirm. A clean window
+/// (no dirty report, or dirty == false) always closes normally — we must
+/// never make a clean window unclosable. The dirty-map entry is cleaned up
+/// when the window is destroyed.
+fn attach_unsaved_guard(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let handle = app.clone();
+    let win = window.clone();
+    let label = window.label().to_string();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            // Lock, copy the bool, drop the guard *before* anything that
+            // could block (the dialog) to avoid holding the mutex across
+            // the prompt and risking a deadlock.
+            let dirty = {
+                let flags = handle.state::<DirtyState>();
+                let guard = flags.flags.lock().unwrap();
+                guard.get(&label).copied().unwrap_or(false)
+            };
+            if !dirty {
+                // Clean window — let it close normally; tidy up the entry.
+                handle
+                    .state::<DirtyState>()
+                    .flags
+                    .lock()
+                    .unwrap()
+                    .remove(&label);
+                return;
+            }
+            // Dirty: hold the close and ask. blocking_show must not run on
+            // the main/UI thread, so confirm on a worker thread and destroy
+            // the window from there if the user agrees.
+            api.prevent_close();
+            let dlg_handle = handle.clone();
+            let dlg_win = win.clone();
+            let dlg_label = label.clone();
+            std::thread::spawn(move || {
+                let confirmed = dlg_handle
+                    .dialog()
+                    .message("You have unsaved changes. Close without saving?")
+                    .buttons(MessageDialogButtons::OkCancel)
+                    .blocking_show();
+                if confirmed {
+                    dlg_handle
+                        .state::<DirtyState>()
+                        .flags
+                        .lock()
+                        .unwrap()
+                        .remove(&dlg_label);
+                    let _ = dlg_win.destroy();
+                }
+            });
+        }
+        tauri::WindowEvent::Destroyed => {
+            handle
+                .state::<DirtyState>()
+                .flags
+                .lock()
+                .unwrap()
+                .remove(&label);
+        }
+        _ => {}
+    });
 }
 
 /// Total size of a file. Used by the launcher to compute how many
@@ -377,31 +509,118 @@ async fn save_document(path: String, bytes: Vec<u8>) -> Result<(), String> {
     std::fs::write(&path, &bytes).map_err(|e| format!("write {path}: {e}"))
 }
 
-/// Truncate (or create) the file at `path`. First step of a chunked
-/// save — the editor then calls write_save_chunk in a loop. Same
-/// motivation as the chunked load: stays under the JSON-array IPC
-/// truncation threshold for very large files.
+// --- Atomic chunked save -----------------------------------------------------
+//
+// SAVE CONTRACT (editors MUST follow this order):
+//   begin_save_document(path)
+//   write_save_chunk(path, offset, bytes)*   (any number, in any order)
+//   commit_save_document(path)
+//
+// begin truncates/creates a *temp sibling* `<path>.casualoffice.tmp` — never
+// the real file. write_save_chunk writes into that temp file. commit fsyncs
+// the temp file and atomically renames it onto the real path. If a chunk
+// fails or commit is never reached, the user's existing file is untouched —
+// no partial write, no truncation, no corruption.
+
+/// Truncate (or create) the temp sibling for `path`. First step of a chunked
+/// save — the editor then calls write_save_chunk in a loop, then
+/// commit_save_document. Writing into a temp file and renaming only on commit
+/// keeps a failed save from corrupting the user's real file.
 #[tauri::command]
-fn begin_save_document(path: String) -> Result<(), String> {
-    std::fs::File::create(&path)
-        .map(|_| ())
-        .map_err(|e| format!("create {path}: {e}"))
+fn begin_save_document(
+    state: tauri::State<'_, SaveState>,
+    path: String,
+) -> Result<(), String> {
+    let tmp = save_temp_path(&path);
+    std::fs::File::create(&tmp)
+        .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+    state
+        .in_progress
+        .lock()
+        .unwrap()
+        .insert(path, tmp);
+    Ok(())
 }
 
-/// Write a slice of the in-progress file. begin_save_document must run
-/// first to truncate / create.
+/// Write a slice of the in-progress save into the temp file for `path`.
+/// begin_save_document must run first to create the temp file.
 #[tauri::command]
-fn write_save_chunk(path: String, offset: u64, bytes: Vec<u8>) -> Result<(), String> {
+fn write_save_chunk(
+    state: tauri::State<'_, SaveState>,
+    path: String,
+    offset: u64,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write};
+    // Derive the temp path deterministically rather than requiring the map
+    // entry, so a write can't fail just because state was lost — but prefer
+    // the tracked entry when present.
+    let tmp = state
+        .in_progress
+        .lock()
+        .unwrap()
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(|| save_temp_path(&path));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
-        .open(&path)
-        .map_err(|e| format!("open {path}: {e}"))?;
+        .open(&tmp)
+        .map_err(|e| format!("open {}: {e}", tmp.display()))?;
     f.seek(SeekFrom::Start(offset))
-        .map_err(|e| format!("seek {path}@{offset}: {e}"))?;
+        .map_err(|e| format!("seek {}@{offset}: {e}", tmp.display()))?;
     f.write_all(&bytes)
-        .map_err(|e| format!("write {path}: {e}"))?;
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
     Ok(())
+}
+
+/// Finalize a chunked save: fsync the temp file, then atomically rename it
+/// onto the real `path`. Last step of the save contract. After this returns
+/// Ok, the real file holds exactly the bytes written across the
+/// write_save_chunk calls; before it, the real file is untouched.
+#[tauri::command]
+fn commit_save_document(
+    state: tauri::State<'_, SaveState>,
+    path: String,
+) -> Result<(), String> {
+    let tmp = state
+        .in_progress
+        .lock()
+        .unwrap()
+        .remove(&path)
+        .unwrap_or_else(|| save_temp_path(&path));
+    // fsync so the bytes are durably on disk before we expose them under
+    // the real name — otherwise a crash right after the rename could leave
+    // a renamed-but-empty file.
+    {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&tmp)
+            .map_err(|e| format!("open {}: {e}", tmp.display()))?;
+        f.sync_all()
+            .map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, &path)
+        .map_err(|e| format!("commit {} -> {path}: {e}", tmp.display()))?;
+    Ok(())
+}
+
+/// Report the unsaved-changes state of a document window. The editor calls
+/// this with `dirty = true` on the first edit after a save and `dirty =
+/// false` after a successful save. The window-close guard (wired in
+/// open_document_window) reads this flag to decide whether to prompt before
+/// closing. Keyed by the window's label so each document window is tracked
+/// independently.
+#[tauri::command]
+fn set_window_dirty(
+    state: tauri::State<'_, DirtyState>,
+    window: tauri::WebviewWindow,
+    dirty: bool,
+) {
+    state
+        .flags
+        .lock()
+        .unwrap()
+        .insert(window.label().to_string(), dirty);
 }
 
 /// Show a Save As dialog and return the picked path without writing
@@ -419,7 +638,12 @@ async fn pick_save_path(
         .save_file(move |p| {
             let _ = tx.send(p.and_then(|fp| fp.into_path().ok()));
         });
-    let chosen = rx.recv().map_err(|e| e.to_string())?;
+    // Bound the wait: if the dialog callback never fires (it has been seen
+    // to silently drop on some platforms) blocking forever would hang the
+    // save indefinitely. 120s leaves ample time for the user to think.
+    let chosen = rx
+        .recv_timeout(Duration::from_secs(120))
+        .map_err(|_| "save dialog timed out or was dismissed".to_string())?;
     Ok(chosen.map(|p| p.to_string_lossy().to_string()))
 }
 
@@ -519,6 +743,17 @@ struct Settings {
     /// surface that clearly in the UI rather than implying false safety.
     #[serde(default)]
     privacy_mode: bool,
+    /// Warn before closing a document window that has unsaved changes. When
+    /// true (the default), the close-guard prompts; when false the user has
+    /// opted to close dirty windows without confirmation. Defaults to true
+    /// via `default_warn_on_unsaved_close` so older settings.json files
+    /// (which predate this field) keep the safe behavior.
+    #[serde(default = "default_warn_on_unsaved_close")]
+    warn_on_unsaved_close: bool,
+}
+
+fn default_warn_on_unsaved_close() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -529,6 +764,7 @@ impl Default for Settings {
             open_window_preference: None,
             last_seen_version: None,
             privacy_mode: false,
+            warn_on_unsaved_close: true,
         }
     }
 }
@@ -671,9 +907,61 @@ fn get_settings(app: AppHandle) -> Settings {
 /// call still returns Ok and the preference is preserved, but screenshots
 /// will still capture the window content. Surface that limitation in
 /// the Settings UI so users aren't misled.
-fn apply_privacy_to_all_windows(app: &AppHandle, enabled: bool) {
+///
+/// Returns the list of window labels for which `set_content_protected`
+/// returned an error, so the caller can surface a partial-failure to the
+/// user rather than silently implying success.
+fn apply_privacy_to_all_windows(app: &AppHandle, enabled: bool) -> Vec<String> {
+    let mut failures = Vec::new();
     for window in app.webview_windows().values() {
-        let _ = window.set_content_protected(enabled);
+        if let Err(e) = window.set_content_protected(enabled) {
+            eprintln!(
+                "privacy: set_content_protected({enabled}) failed for {}: {e}",
+                window.label()
+            );
+            failures.push(window.label().to_string());
+        }
+    }
+    failures
+}
+
+/// Apply the current privacy-mode flag live to every open window — the
+/// launcher window ("main") and every "doc-*" document window. Called by
+/// the Settings UI immediately after persisting the preference so toggling
+/// privacy takes effect on already-open windows, not just future ones.
+///
+/// On macOS this drives `NSWindow.sharingType`; on Windows,
+/// `DwmSetWindowAttribute`. On Linux/WebKitGTK there is no equivalent
+/// compositor API so the call is a no-op there. If any window's call
+/// errors, this returns Err with the affected labels so the UI can avoid
+/// implying success.
+#[tauri::command]
+fn apply_privacy_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let failures = apply_privacy_to_all_windows(&app, enabled);
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "content protection could not be applied to {} window(s): {}",
+            failures.len(),
+            failures.join(", ")
+        ))
+    }
+}
+
+/// Push the current theme mode to every open document window so already-open
+/// editors switch live when the user changes the theme in the launcher. The
+/// launcher owns the theme preference; editor windows only listen. Emits the
+/// `deskapp://theme` event (payload `{ "theme": <mode> }`) to each webview
+/// window whose label starts with `doc-`. The launcher window ("main")
+/// re-themes itself locally via applyTheme and is intentionally skipped.
+#[tauri::command]
+fn broadcast_theme(app: AppHandle, mode: String) {
+    for window in app.webview_windows().values() {
+        if !window.label().starts_with("doc-") {
+            continue;
+        }
+        let _ = window.emit("deskapp://theme", serde_json::json!({ "theme": mode }));
     }
 }
 
@@ -682,7 +970,11 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     let path = settings_path(&app)?;
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    apply_privacy_to_all_windows(&app, settings.privacy_mode);
+    // Best-effort live apply on save. The Settings UI also calls
+    // `apply_privacy_mode` explicitly (so it can surface per-window
+    // failures), but applying here too keeps any other save_settings
+    // caller honest. Failures are logged inside the helper.
+    let _ = apply_privacy_to_all_windows(&app, settings.privacy_mode);
     Ok(settings)
 }
 
@@ -729,6 +1021,9 @@ fn open_file_path(app: &AppHandle, path: String) {
     );
     let mut url = format!("{}?desk=1&file=", kind.subpath());
     url.push_str(&urlencoding_lite(&path));
+    let theme = get_settings(app.clone()).theme;
+    url.push_str("&theme=");
+    url.push_str(&urlencoding_lite(&theme));
 
     let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title(&title)
@@ -763,6 +1058,7 @@ fn open_file_path(app: &AppHandle, path: String) {
         if get_settings(app.clone()).privacy_mode {
             let _ = window.set_content_protected(true);
         }
+        attach_unsaved_guard(app, &window);
         let w = window.clone();
         std::thread::spawn(move || {
             for delay_ms in [250u64, 800, 1500] {
@@ -812,6 +1108,8 @@ pub fn run() {
             app.manage(RecentsState {
                 list: Mutex::new(initial),
             });
+            app.manage(SaveState::default());
+            app.manage(DirtyState::default());
             // (Earlier prototype attached a native menu bar via
             // tauri::menu::Menu. Removed — visual treatment didn't fit
             // the launcher's home-screen layout. Keyboard shortcuts that
@@ -828,6 +1126,13 @@ pub fn run() {
             //     file; popping up the home screen alongside is noise.
             //   - launched with no file path (clicking the app icon) →
             //     show the launcher.
+            // Honor the saved privacy preference on the launcher window at
+            // boot so "main" is content-protected from first paint, not just
+            // after the user re-toggles the setting.
+            if get_settings(app.handle().clone()).privacy_mode {
+                let _ = apply_privacy_to_all_windows(&app.handle(), true);
+            }
+
             let args: Vec<String> = std::env::args().collect();
             if let Some(path) = first_openable_path(&args) {
                 open_file_path(&app.handle(), path);
@@ -853,6 +1158,8 @@ pub fn run() {
             save_document_as,
             begin_save_document,
             write_save_chunk,
+            commit_save_document,
+            set_window_dirty,
             pick_save_path,
             reset_profile,
             focus_launcher_window,
@@ -863,6 +1170,8 @@ pub fn run() {
             read_avatar_bytes,
             get_settings,
             save_settings,
+            apply_privacy_mode,
+            broadcast_theme,
             get_app_version,
         ])
         .run(tauri::generate_context!())

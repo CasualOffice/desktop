@@ -1,6 +1,6 @@
 {
   "name": "deskapp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Cross-platform desktop wrapper for the docx + sheets editors",
   "scripts": {
@@ -13,5 +13,8 @@
     "tauri:dev": "cd apps/shell && cargo tauri dev",
     "tauri:build": "cd apps/shell && cargo tauri build"
   },
-  "packageManager": "pnpm@9.15.9"
+  "packageManager": "pnpm@9.15.9",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
 }

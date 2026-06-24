@@ -78,6 +78,8 @@ export async function mockTauri(page: Page, state: Partial<MockState> = {}) {
             case 'save_settings':
               s.settings = args.settings as MockState['settings'];
               return s.settings;
+            case 'apply_privacy_mode':
+              return;
             case 'get_recent_files':
               return s.recents;
             case 'clear_recent_files':

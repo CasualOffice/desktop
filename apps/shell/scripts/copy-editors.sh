@@ -34,7 +34,25 @@ cp -R "$SHEETS_DIST" "$PUBLIC/sheets"
 mkdir -p "$PUBLIC/sheets/fonts"
 cp "$(pwd)/assets/fonts/"*.woff2 "$PUBLIC/sheets/fonts/"
 
+# Same for docx: its bootstrap declares the 'Material Symbols Outlined' icon
+# font at ./fonts/ (relative to /docx/) only when isDesktop(). The web build
+# uses the Google Fonts CDN, so we supply the woff2 here. Body text uses system
+# fonts already; only the icon font needs bundling for offline icon rendering.
+mkdir -p "$PUBLIC/docx/fonts"
+cp "$(pwd)/assets/fonts/material-symbols-outlined.woff2" "$PUBLIC/docx/fonts/"
+
+# Brand logo at the app root. The docx editor's title-bar + Home marks render
+# <img src="/logo.svg"> — an absolute path that, on the web, resolves to the
+# server root. In the desktop bundle each editor is mounted under /docx/ or
+# /sheets/, so the editor's own logo at /docx/logo.svg is never hit by that
+# absolute reference. We copy the docx logo to the app root so `/logo.svg`
+# resolves route-independently (sheets only uses the string as placeholder
+# text, never as an <img>, so a single root logo is correct for both).
+cp "$PUBLIC/docx/logo.svg" "$PUBLIC/logo.svg"
+
 echo "Editors copied:"
 echo "  $PUBLIC/docx (from $DOCX_DIST)"
 echo "  $PUBLIC/sheets (from $SHEETS_DIST)"
 echo "  $PUBLIC/sheets/fonts (from $(pwd)/assets/fonts)"
+echo "  $PUBLIC/docx/fonts (material-symbols-outlined.woff2 from $(pwd)/assets/fonts)"
+echo "  $PUBLIC/logo.svg (root brand mark for the editors' absolute /logo.svg)"

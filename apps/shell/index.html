@@ -30,14 +30,17 @@
           </label>
           <label class="field">
             <span>Email <em class="muted">(optional)</em></span>
-            <input id="wiz-email" type="email" placeholder="you@example.com" autocomplete="off" />
+            <input id="wiz-email" type="email" placeholder="you@example.com" autocomplete="off" aria-describedby="wiz-email-error" />
+            <span id="wiz-email-error" class="field-error" hidden></span>
           </label>
           <label class="field">
             <span>Time zone</span>
-            <input id="wiz-tz" type="text" autocomplete="off" list="tz-list" placeholder="e.g. America/New_York" />
+            <input id="wiz-tz" type="text" autocomplete="off" list="tz-list" placeholder="e.g. America/New_York" aria-describedby="wiz-tz-error" />
+            <span id="wiz-tz-error" class="field-error" hidden></span>
           </label>
           <p class="hint">Used as author metadata on documents you save. Stored locally; never sent anywhere.</p>
           <div class="wiz-actions">
+            <button id="wiz-skip" type="button" class="link">Skip for now</button>
             <button id="wiz-next-1" type="button" disabled>Continue</button>
           </div>
         </section>
@@ -46,19 +49,19 @@
           <h1>Pick a theme</h1>
           <p class="sub">You can change this any time in settings.</p>
           <div class="theme-grid" role="radiogroup" aria-label="Theme">
-            <label class="theme-card">
+            <label class="theme-card" role="radio" aria-checked="true" aria-label="System theme">
               <input type="radio" name="theme" value="system" checked />
-              <span class="theme-preview system"></span>
+              <span class="theme-preview system" aria-hidden="true"></span>
               <span>System</span>
             </label>
-            <label class="theme-card">
+            <label class="theme-card" role="radio" aria-checked="false" aria-label="Light theme">
               <input type="radio" name="theme" value="light" />
-              <span class="theme-preview light"></span>
+              <span class="theme-preview light" aria-hidden="true"></span>
               <span>Light</span>
             </label>
-            <label class="theme-card">
+            <label class="theme-card" role="radio" aria-checked="false" aria-label="Dark theme">
               <input type="radio" name="theme" value="dark" />
-              <span class="theme-preview dark"></span>
+              <span class="theme-preview dark" aria-hidden="true"></span>
               <span>Dark</span>
             </label>
           </div>
@@ -123,30 +126,32 @@
             </label>
             <label class="field">
               <span>Email <em class="muted">(optional)</em></span>
-              <input id="settings-email" type="email" autocomplete="off" />
+              <input id="settings-email" type="email" autocomplete="off" aria-describedby="settings-email-error" />
+              <span id="settings-email-error" class="field-error" hidden></span>
             </label>
             <label class="field">
               <span>Time zone</span>
-              <input id="settings-tz" type="text" autocomplete="off" list="tz-list" placeholder="e.g. America/New_York" />
+              <input id="settings-tz" type="text" autocomplete="off" list="tz-list" placeholder="e.g. America/New_York" aria-describedby="settings-tz-error" />
+              <span id="settings-tz-error" class="field-error" hidden></span>
             </label>
           </section>
 
           <section class="settings-section">
             <h2>Appearance</h2>
             <div class="theme-grid" role="radiogroup" aria-label="Theme">
-              <label class="theme-card">
+              <label class="theme-card" role="radio" aria-checked="false" aria-label="System theme">
                 <input type="radio" name="settings-theme" value="system" />
-                <span class="theme-preview system"></span>
+                <span class="theme-preview system" aria-hidden="true"></span>
                 <span>System</span>
               </label>
-              <label class="theme-card">
+              <label class="theme-card" role="radio" aria-checked="false" aria-label="Light theme">
                 <input type="radio" name="settings-theme" value="light" />
-                <span class="theme-preview light"></span>
+                <span class="theme-preview light" aria-hidden="true"></span>
                 <span>Light</span>
               </label>
-              <label class="theme-card">
+              <label class="theme-card" role="radio" aria-checked="false" aria-label="Dark theme">
                 <input type="radio" name="settings-theme" value="dark" />
-                <span class="theme-preview dark"></span>
+                <span class="theme-preview dark" aria-hidden="true"></span>
                 <span>Dark</span>
               </label>
             </div>
@@ -162,6 +167,37 @@
               <button id="settings-pick-dir" class="secondary" type="button">Choose…</button>
               <button id="settings-clear-dir" class="link" type="button">Clear</button>
             </div>
+          </section>
+
+          <section class="settings-section">
+            <h2>Behavior</h2>
+            <div class="field">
+              <span>When opening a document</span>
+              <div class="seg" role="radiogroup" aria-label="When opening a document">
+                <label class="seg-option">
+                  <input type="radio" name="settings-open-pref" value="ask" />
+                  <span>Ask each time</span>
+                </label>
+                <label class="seg-option">
+                  <input type="radio" name="settings-open-pref" value="same" />
+                  <span>This window</span>
+                </label>
+                <label class="seg-option">
+                  <input type="radio" name="settings-open-pref" value="new" />
+                  <span>New window</span>
+                </label>
+              </div>
+            </div>
+            <label class="field-checkbox" for="settings-warn-close">
+              <input id="settings-warn-close" type="checkbox" />
+              <span>
+                <strong>Warn before closing a document with unsaved changes</strong>
+                <span class="muted block">
+                  Show a confirmation prompt when closing a document
+                  window that still has unsaved edits.
+                </span>
+              </span>
+            </label>
           </section>
 
           <section class="settings-section">
@@ -237,7 +273,7 @@
               </span>
               <div>
                 <div class="card-title">Open file</div>
-                <div class="card-sub">.docx, .xlsx, .ods, .csv, .tsv</div>
+                <div class="card-sub">.docx, .txt, .md, .xlsx, .ods, .csv, .tsv</div>
               </div>
             </button>
           </section>
@@ -253,9 +289,9 @@
                   <input id="recent-search" type="text" placeholder="Search recent…" autocomplete="off" />
                 </label>
                 <div class="recent-filter" role="tablist" aria-label="Filter by type">
-                  <button class="filter-btn active" data-filter="all" type="button">All</button>
-                  <button class="filter-btn" data-filter="docx" type="button">Documents</button>
-                  <button class="filter-btn" data-filter="sheets" type="button">Spreadsheets</button>
+                  <button class="filter-btn active" data-filter="all" type="button" role="tab" aria-selected="true">All</button>
+                  <button class="filter-btn" data-filter="docx" type="button" role="tab" aria-selected="false">Documents</button>
+                  <button class="filter-btn" data-filter="sheets" type="button" role="tab" aria-selected="false">Spreadsheets</button>
                 </div>
                 <button id="clear-recents" type="button" class="link">Clear all</button>
               </div>
@@ -267,6 +303,18 @@
           <section id="empty" class="empty" hidden>
             <p>No recent files yet — open one to get started.</p>
             <p class="hint">You can also drag a <code>.docx</code> or <code>.xlsx</code> onto this window.</p>
+          </section>
+
+          <!-- Recents loading state — shown while the first fetch is in flight. -->
+          <section id="recent-loading" class="recent-loading" aria-live="polite" hidden>
+            <span class="recent-spinner" aria-hidden="true"></span>
+            <p class="hint">Loading recent files…</p>
+          </section>
+
+          <!-- Recents error state — distinct from "no files yet". -->
+          <section id="recent-error" class="empty recent-error-state" hidden>
+            <p>Couldn't load your recent files.</p>
+            <button id="recent-retry" type="button" class="secondary">Retry</button>
           </section>
 
           <div class="kbd-hints" aria-label="Keyboard shortcuts">
@@ -288,7 +336,7 @@
         <p class="sub" id="open-choice-sub">Choose how to open this document.</p>
         <label class="modal-remember">
           <input id="open-choice-remember" type="checkbox" />
-          <span>Don't ask again — always open this way</span>
+          <span>Remember this choice for all documents</span>
         </label>
         <div class="modal-actions">
           <button id="open-choice-cancel" class="link" type="button">Cancel</button>

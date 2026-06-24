@@ -1,0 +1,24 @@
+{
+  "pkg": "casual-office-ui",
+  "globalName": "CasualOfficeUI",
+  "projectId": "d2c6a9e4-0bc2-4609-ab64-b921e882c97b",
+  "shape": "package",
+  "buildCmd": "pnpm --filter casual-office-ui build",
+  "cssEntry": "dist/casual-office-ui.css",
+  "tokensGlob": "src/styles/tokens.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "ActionCard": { "cardMode": "column" },
+    "BootSkeleton": { "cardMode": "column" },
+    "CheckboxField": { "cardMode": "column" },
+    "EmptyState": { "cardMode": "column" },
+    "Field": { "cardMode": "column" },
+    "RecentCard": { "cardMode": "column" },
+    "SettingsSection": { "cardMode": "column" },
+    "TextInput": { "cardMode": "column" },
+    "ThemeCard": { "cardMode": "column" },
+    "Topbar": { "cardMode": "column" },
+    "WizardCard": { "cardMode": "column" },
+    "Modal": { "cardMode": "single", "primaryStory": "OpenWhere" }
+  }
+}

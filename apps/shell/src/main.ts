@@ -36,6 +36,9 @@ interface Settings {
    *  stored preference only; OS-level content protection is not
    *  available through the compositor. */
   privacy_mode?: boolean;
+  /** Warn before closing a document window with unsaved changes.
+   *  Defaults to true on the Rust side. */
+  warn_on_unsaved_close?: boolean;
 }
 
 /**
@@ -48,7 +51,7 @@ const CHANGELOG: ReadonlyArray<{ version: string; title: string; highlights: str
     version: '0.0.0',
     title: 'Welcome to Casual Office',
     highlights: [
-      'Edit Word (.docx) and Excel (.xlsx, .ods, .csv, .tsv) files locally — nothing leaves your machine.',
+      'Edit Word (.docx), text (.txt, .md) and Excel (.xlsx, .ods, .csv, .tsv) files locally — nothing leaves your machine.',
       'One native window per document — same speed and isolation as Excel or Word.',
       'Save writes back to the original file; Save As always prompts for a new location.',
       'Profile + settings with custom picture, theme, and default save folder.',
@@ -92,7 +95,13 @@ function relTime(epochSecs: number): string {
 
 function kindFromPath(path: string): DocKind | null {
   const lower = path.toLowerCase();
-  if (lower.endsWith('.docx')) return 'docx';
+  if (
+    lower.endsWith('.docx') ||
+    lower.endsWith('.txt') ||
+    lower.endsWith('.md') ||
+    lower.endsWith('.markdown')
+  )
+    return 'docx';
   if (
     lower.endsWith('.xlsx') ||
     lower.endsWith('.xlsm') ||
@@ -125,9 +134,44 @@ function applyTheme(theme: Settings['theme']) {
   document.documentElement.dataset.theme = theme;
 }
 
-function setStatus(msg: string) {
+/** Push the new theme mode to every already-open document window so their
+ *  editors switch live. Fire-and-forget; the launcher itself re-themes via
+ *  the local applyTheme call. */
+function broadcastTheme(mode: Settings['theme']) {
+  invoke('broadcast_theme', { mode }).catch((err) => {
+    console.warn('broadcast_theme failed', err);
+  });
+}
+
+/** Mirror each radio's checked state onto its wrapping .theme-card's
+ *  aria-checked, so the role="radio" labels expose correct state to AT. */
+function syncThemeCardAria() {
+  for (const card of document.querySelectorAll<HTMLElement>('.theme-card[role=radio]')) {
+    const input = card.querySelector<HTMLInputElement>('input[type=radio]');
+    card.setAttribute('aria-checked', input?.checked ? 'true' : 'false');
+  }
+}
+
+let statusClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Update the home-panel status line. Pass a non-zero `clearAfterMs` to
+ *  make the message transient (it reverts to empty after the delay) — used
+ *  for ephemeral "Opening …" / "Opened …" feedback so the line isn't dead
+ *  UI. A persistent message (clearAfterMs = 0) is used for the boot error. */
+function setStatus(msg: string, clearAfterMs = 0) {
   const el = document.getElementById('status');
-  if (el) el.textContent = msg;
+  if (!el) return;
+  el.textContent = msg;
+  if (statusClearTimer) {
+    clearTimeout(statusClearTimer);
+    statusClearTimer = null;
+  }
+  if (clearAfterMs > 0) {
+    statusClearTimer = setTimeout(() => {
+      el.textContent = '';
+      statusClearTimer = null;
+    }, clearAfterMs);
+  }
 }
 
 // =============================================================================
@@ -153,6 +197,187 @@ function toast(message: string, kind: ToastKind = 'default', durationMs = 3000) 
   };
   setTimeout(dismiss, durationMs);
   el.addEventListener('click', dismiss);
+}
+
+/**
+ * Toast with a single inline action button (e.g. "Undo", "Retry"). The
+ * action button doesn't dismiss on the container-click path — only the
+ * body text does — so the user can click the action without racing the
+ * auto-dismiss. Returns a handle to dismiss early.
+ */
+function actionToast(
+  message: string,
+  actionLabel: string,
+  onAction: () => void,
+  kind: ToastKind = 'default',
+  durationMs = 6000,
+): { dismiss: () => void } {
+  const container = document.getElementById('toasts');
+  if (!container) return { dismiss: () => undefined };
+  const el = document.createElement('div');
+  el.className = `toast${kind === 'default' ? '' : ` ${kind}`}`;
+  const text = document.createElement('span');
+  text.className = 'toast-text';
+  text.textContent = message;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'toast-action';
+  btn.textContent = actionLabel;
+  el.appendChild(text);
+  el.appendChild(btn);
+  container.appendChild(el);
+  let done = false;
+  const dismiss = () => {
+    if (done) return;
+    done = true;
+    el.classList.add('leaving');
+    el.addEventListener('animationend', () => el.remove(), { once: true });
+  };
+  const timer = setTimeout(dismiss, durationMs);
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    clearTimeout(timer);
+    onAction();
+    dismiss();
+  });
+  // Clicking the text (not the button) dismisses early.
+  text.addEventListener('click', () => {
+    clearTimeout(timer);
+    dismiss();
+  });
+  return { dismiss };
+}
+
+// =============================================================================
+// Friendly error mapping — Rust commands return raw strings (often the OS
+// errno text). Wrap them into something a user can act on, and always
+// include the file label so a toast in the corner is self-explanatory.
+// =============================================================================
+
+function friendlyError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  const lower = raw.toLowerCase();
+  if (lower.includes('enoent') || lower.includes('no such file') || lower.includes('not found')) {
+    return 'the file no longer exists at that location.';
+  }
+  if (lower.includes('eacces') || lower.includes('permission denied') || lower.includes('access is denied')) {
+    return 'permission was denied — check the file or folder permissions.';
+  }
+  if (lower.includes('ebusy') || lower.includes('in use') || lower.includes('locked')) {
+    return 'the file is open in another program.';
+  }
+  if (lower.includes('enospc') || lower.includes('no space')) {
+    return 'there is not enough disk space.';
+  }
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    return 'the operation timed out.';
+  }
+  return raw || 'an unexpected error occurred.';
+}
+
+/** `Could not open "<name>": <friendly>` — used for open + save toasts. */
+function fileErrorMessage(verb: string, label: string, err: unknown): string {
+  return `${verb} “${label}”: ${friendlyError(err)}`;
+}
+
+// =============================================================================
+// In-app confirm modal — reuses the .modal / .modal-backdrop visual
+// language. Resolves true on confirm, false on cancel / Escape / backdrop.
+// =============================================================================
+
+function confirmDialog(opts: {
+  title: string;
+  body: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">${escapeHtml(opts.title)}</h2>
+        <p class="sub">${escapeHtml(opts.body)}</p>
+        <div class="modal-actions">
+          <button class="link" data-act="cancel" type="button">${escapeHtml(opts.cancelLabel ?? 'Cancel')}</button>
+          <span class="spacer"></span>
+          <button data-act="confirm" type="button"${opts.danger ? ' class="danger"' : ''}>${escapeHtml(opts.confirmLabel ?? 'Confirm')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const confirmBtn = backdrop.querySelector<HTMLButtonElement>('[data-act=confirm]')!;
+    const cancelBtn = backdrop.querySelector<HTMLButtonElement>('[data-act=cancel]')!;
+    const finish = (result: boolean) => {
+      window.removeEventListener('keydown', onKey);
+      backdrop.remove();
+      previouslyFocused?.focus?.();
+      resolve(result);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true);
+      }
+    };
+    confirmBtn.addEventListener('click', () => finish(true));
+    cancelBtn.addEventListener('click', () => finish(false));
+    // Backdrop click (outside the modal) cancels.
+    backdrop.addEventListener('mousedown', (e) => {
+      if (e.target === backdrop) finish(false);
+    });
+    window.addEventListener('keydown', onKey);
+    setTimeout(() => confirmBtn.focus(), 0);
+  });
+}
+
+/**
+ * Fire-and-forget IPC for a state-changing action that should warn (subtly)
+ * if it didn't persist. Use only for user-initiated mutations — not for
+ * read-only refreshes.
+ */
+function persistOrWarn(promise: Promise<unknown>, what: string) {
+  promise.catch((err) => {
+    console.error(`${what} failed to persist`, err);
+    toast(`${what} may not have been saved.`, 'error', 4000);
+  });
+}
+
+/**
+ * Copy text to the clipboard, preferring the browser clipboard API (works
+ * inside the Tauri webview) and falling back to a hidden-textarea +
+ * execCommand for older WebKitGTK builds that gate navigator.clipboard.
+ * Shows a transient toast either way.
+ */
+async function copyToClipboard(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      toast('Path copied', 'success');
+      return;
+    }
+  } catch (err) {
+    console.warn('navigator.clipboard.writeText failed; falling back', err);
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    toast(ok ? 'Path copied' : 'Couldn’t copy path', ok ? 'success' : 'error');
+  } catch (err) {
+    console.error('clipboard fallback failed', err);
+    toast('Couldn’t copy path', 'error');
+  }
 }
 
 // =============================================================================
@@ -188,14 +413,17 @@ function doOpen(kind: DocKind, filePath: string | null, where: 'same' | 'new') {
     : kind === 'docx'
       ? 'New document'
       : 'New spreadsheet';
+  setStatus(`Opening ${label}…`);
   invoke('open_document_window', { kind, filePath })
     .then(() => {
       refreshRecents();
       toast(`Opened ${label}`, 'success');
+      setStatus(`Opened ${label}`, 2500);
     })
     .catch((err) => {
       console.error('open_document_window failed', err);
-      toast(`Could not open: ${err}`, 'error', 5000);
+      toast(fileErrorMessage('Could not open', label ?? 'document', err), 'error', 5000);
+      setStatus(`Couldn’t open ${label}`, 4000);
     });
 }
 
@@ -206,6 +434,7 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
   const label = filePath ? filePath.split(/[\\/]/).pop() : kind === 'docx' ? 'New document' : 'New spreadsheet';
   sub.textContent = label ? `Open “${label}” in:` : 'Open in:';
   remember.checked = false;
+  const previouslyFocused = document.activeElement as HTMLElement | null;
   modal.hidden = false;
   // Default focus on the primary action so Enter activates it.
   setTimeout(() => $<HTMLButtonElement>('open-choice-same').focus(), 0);
@@ -218,13 +447,16 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
     sameBtn.removeEventListener('click', onSame);
     newBtn.removeEventListener('click', onNew);
     cancelBtn.removeEventListener('click', onCancel);
+    modal.removeEventListener('mousedown', onBackdrop);
     window.removeEventListener('keydown', onKey);
+    // Return focus to whatever opened the dialog.
+    previouslyFocused?.focus?.();
   };
   const persistIfRemembered = (choice: 'same' | 'new') => {
     if (remember.checked) {
       const next: Settings = { ...state.settings, open_window_preference: choice };
       state.settings = next;
-      invoke('save_settings', { settings: next }).catch(() => undefined);
+      persistOrWarn(invoke('save_settings', { settings: next }), 'Window preference');
     }
   };
   const onSame = () => {
@@ -244,9 +476,14 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
       cleanup();
     }
   };
+  // Click on the backdrop (outside the .modal box) cancels.
+  const onBackdrop = (e: MouseEvent) => {
+    if (e.target === modal) cleanup();
+  };
   sameBtn.addEventListener('click', onSame);
   newBtn.addEventListener('click', onNew);
   cancelBtn.addEventListener('click', onCancel);
+  modal.addEventListener('mousedown', onBackdrop);
   window.addEventListener('keydown', onKey);
 }
 
@@ -259,6 +496,14 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
 let lastRecentList: RecentFile[] = [];
 let recentSearchQuery = '';
 let recentTypeFilter: 'all' | 'docx' | 'sheets' = 'all';
+/** Tracks the recents fetch lifecycle so render can show a loading
+ *  spinner or a distinct error state instead of the empty placeholder. */
+let recentsLoadState: 'idle' | 'loading' | 'error' = 'idle';
+
+/** Paths whose recent card was clicked very recently. Used to debounce
+ *  rapid double/triple-clicks so we don't queue several open commands for
+ *  the same file. A path is locked for ~500ms after the first click. */
+const recentClickLock = new Set<string>();
 
 /** Stable "what bucket does this file belong in" classifier. Office's
  *  Backstage view groups recent files the same way. */
@@ -318,11 +563,21 @@ function fileIconSvg(kind: DocKind): string {
 }
 
 async function refreshRecents() {
+  // Only show the loading state when we have nothing to display yet —
+  // a background refresh over an existing list shouldn't blank it out.
+  if (lastRecentList.length === 0) {
+    recentsLoadState = 'loading';
+    renderRecents();
+  }
   try {
     lastRecentList = await invoke<RecentFile[]>('get_recent_files');
+    recentsLoadState = 'idle';
     renderRecents();
   } catch (err) {
     console.error('refreshRecents failed', err);
+    recentsLoadState = 'error';
+    renderRecents();
+    toast('Couldn’t load recent files.', 'error', 4000);
   }
 }
 
@@ -330,8 +585,30 @@ function renderRecents() {
   const recent = $('recent');
   const empty = $('empty');
   const noMatch = $('recent-no-match');
+  const loading = $('recent-loading');
+  const errorEl = $('recent-error');
   const groupsEl = $('recent-groups');
   groupsEl.innerHTML = '';
+
+  // Loading: nothing cached yet, fetch in flight.
+  if (recentsLoadState === 'loading') {
+    recent.hidden = true;
+    empty.hidden = true;
+    loading.hidden = false;
+    errorEl.hidden = true;
+    return;
+  }
+  loading.hidden = true;
+
+  // Error: the fetch failed and we have nothing to show.
+  if (recentsLoadState === 'error' && lastRecentList.length === 0) {
+    recent.hidden = true;
+    empty.hidden = true;
+    errorEl.hidden = false;
+    return;
+  }
+  errorEl.hidden = true;
+
   if (lastRecentList.length === 0) {
     recent.hidden = true;
     empty.hidden = false;
@@ -383,10 +660,18 @@ function renderRecents() {
     const grid = document.createElement('div');
     grid.className = 'recent-grid';
     for (const f of list) {
+      // A relative wrapper so the "more actions" (⋯) button can sit in the
+      // card's top-right corner — a <button> can't legally nest inside the
+      // card <button>, so it's a sibling layered over it on hover/focus.
+      const wrap = document.createElement('div');
+      wrap.className = 'recent-card-wrap';
+
       const card = document.createElement('button');
       card.type = 'button';
       card.className = `recent-card${f.pinned ? ' pinned' : ''}`;
       card.title = f.path;
+      // The directory path is selectable so a user can copy it directly;
+      // the "Copy path" context-menu item covers the whole path.
       card.innerHTML = `
         ${fileIconSvg(f.kind)}
         <div class="recent-card-meta">
@@ -403,7 +688,25 @@ function renderRecents() {
         e.preventDefault();
         openRecentContextMenu(f, e.clientX, e.clientY);
       });
-      grid.appendChild(card);
+
+      // "More actions" affordance — visible on card hover/focus, always
+      // reachable by keyboard. Opens the same context menu as right-click,
+      // anchored under the button.
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'recent-card-more';
+      more.setAttribute('aria-label', `More actions for ${basename(f.path)}`);
+      more.title = 'More actions';
+      more.textContent = '⋯';
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const r = more.getBoundingClientRect();
+        openRecentContextMenu(f, r.left, r.bottom + 2);
+      });
+
+      wrap.appendChild(card);
+      wrap.appendChild(more);
+      grid.appendChild(wrap);
     }
     section.appendChild(grid);
     groupsEl.appendChild(section);
@@ -428,7 +731,9 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
         invoke('add_recent_file', { path: f.path }).catch(() => undefined);
         invoke('open_document_window', { kind: f.kind, filePath: f.path })
           .then(() => toast(`Opened ${basename(f.path)}`, 'success'))
-          .catch((err) => toast(`Could not open: ${err}`, 'error', 4500));
+          .catch((err) =>
+            toast(fileErrorMessage('Could not open', basename(f.path), err), 'error', 4500),
+          );
       },
     },
     {
@@ -452,15 +757,12 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
       },
     },
     {
+      label: 'Copy path',
+      run: () => copyToClipboard(f.path),
+    },
+    {
       label: 'Remove from recents',
-      run: async () => {
-        try {
-          await invoke('remove_recent_file', { path: f.path });
-        } catch {
-          /* best-effort */
-        }
-        await refreshRecents();
-      },
+      run: () => removeRecentWithUndo(f),
     },
   ];
   for (const item of items) {
@@ -495,11 +797,13 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
       closeAnyContextMenu();
     }
   };
-  // Defer the global listeners by one frame so the contextmenu event that
-  // opened us doesn't immediately close it.
+  // Escape can attach immediately — the opening event is a mouse event, not a
+  // keydown, so there's no self-close race. Only the mousedown `dismiss` must
+  // be deferred one frame so the contextmenu/mousedown that opened us doesn't
+  // instantly close it.
+  window.addEventListener('keydown', onKey);
   setTimeout(() => {
     window.addEventListener('mousedown', dismiss);
-    window.addEventListener('keydown', onKey);
   }, 0);
   // Stash cleanup on the element so closeAnyContextMenu can run it.
   (menu as HTMLElement & { __cleanup?: () => void }).__cleanup = () => {
@@ -516,12 +820,54 @@ function closeAnyContextMenu() {
 }
 
 /**
+ * Remove a recent entry, but offer a ~6s undo via an action toast. The
+ * removed entry is cached so undo can re-add it (restoring its pin state
+ * with the existing add + set-pinned commands).
+ */
+async function removeRecentWithUndo(f: RecentFile) {
+  try {
+    await invoke('remove_recent_file', { path: f.path });
+  } catch (err) {
+    console.error('remove_recent_file failed', err);
+    toast(`Couldn’t remove “${basename(f.path)}”.`, 'error', 4000);
+    return;
+  }
+  await refreshRecents();
+  actionToast(
+    `Removed “${basename(f.path)}”.`,
+    'Undo',
+    async () => {
+      try {
+        await invoke('add_recent_file', { path: f.path });
+        if (f.pinned) {
+          await invoke('set_recent_pinned', { path: f.path, pinned: true }).catch(() => undefined);
+        }
+      } catch (err) {
+        console.error('undo remove failed', err);
+        toast(`Couldn’t restore “${basename(f.path)}”.`, 'error', 4000);
+      }
+      await refreshRecents();
+    },
+    'default',
+    6000,
+  );
+}
+
+/**
  * Open a recent file with a pre-flight existence check. If the path no
  * longer exists (user moved or deleted it since it was last opened),
  * show an actionable error toast instead of opening an editor that
  * silently fails to render.
  */
 async function openRecent(f: RecentFile) {
+  // Debounce rapid double/triple-clicks on the same card so we don't queue
+  // multiple open commands (and multiple windows). The path is locked for
+  // 500ms after the first click; subsequent clicks within that window are
+  // ignored.
+  if (recentClickLock.has(f.path)) return;
+  recentClickLock.add(f.path);
+  setTimeout(() => recentClickLock.delete(f.path), 500);
+
   let exists = true;
   try {
     exists = await invoke<boolean>('file_exists', { path: f.path });
@@ -547,8 +893,12 @@ function bindHomePanel() {
       multiple: false,
       directory: false,
       filters: [
-        { name: 'All supported', extensions: ['docx', 'xlsx', 'xlsm', 'ods', 'csv', 'tsv', 'tab'] },
+        {
+          name: 'All supported',
+          extensions: ['docx', 'txt', 'md', 'markdown', 'xlsx', 'xlsm', 'ods', 'csv', 'tsv', 'tab'],
+        },
         { name: 'Word document', extensions: ['docx'] },
+        { name: 'Text', extensions: ['txt', 'md', 'markdown'] },
         { name: 'Spreadsheet', extensions: ['xlsx', 'xlsm', 'ods'] },
         { name: 'Delimited', extensions: ['csv', 'tsv', 'tab'] },
       ],
@@ -566,9 +916,27 @@ function bindHomePanel() {
   $('new-sheets').addEventListener('click', () => openOrReplaceLauncher('sheets', null));
 
   $('clear-recents').addEventListener('click', async () => {
-    await invoke('clear_recent_files');
-    await refreshRecents();
-    toast('Recent files cleared');
+    const ok = await confirmDialog({
+      title: 'Clear all recent files?',
+      body: 'This removes every entry from your recent files list, including pinned ones. The files themselves are not deleted. This can’t be undone.',
+      confirmLabel: 'Clear all',
+      cancelLabel: 'Keep them',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await invoke('clear_recent_files');
+      await refreshRecents();
+      toast('Recent files cleared');
+    } catch (err) {
+      console.error('clear_recent_files failed', err);
+      toast('Couldn’t clear recent files.', 'error', 4000);
+    }
+  });
+
+  // Retry button in the recents error state.
+  $('recent-retry').addEventListener('click', () => {
+    refreshRecents();
   });
 
   // Filter recent files as the user types — pure client-side over the
@@ -579,13 +947,16 @@ function bindHomePanel() {
     renderRecents();
   });
 
-  // Type-filter buttons (All / Documents / Spreadsheets).
+  // Type-filter buttons (All / Documents / Spreadsheets). These are
+  // role="tab" — keep aria-selected in sync with the active class.
   for (const btn of document.querySelectorAll<HTMLButtonElement>('.filter-btn')) {
     btn.addEventListener('click', () => {
-      for (const other of document.querySelectorAll('.filter-btn')) {
+      for (const other of document.querySelectorAll<HTMLButtonElement>('.filter-btn')) {
         other.classList.remove('active');
+        other.setAttribute('aria-selected', 'false');
       }
       btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
       recentTypeFilter = (btn.dataset.filter as typeof recentTypeFilter) ?? 'all';
       renderRecents();
     });
@@ -606,6 +977,18 @@ async function bindDragDrop() {
   const title = $('drop-title');
   const sub = $('drop-sub');
 
+  // Long safety-net timeout: the overlay is normally dismissed by an
+  // actual 'leave' or 'drop' event. The timer is only a last resort for
+  // WMs that swallow those events entirely. A short (4s) timer caused
+  // visible flicker when the user held a drag over the window without
+  // moving, so it's been pushed out to 30s and is reset on every 'over'
+  // — long enough that a real, ongoing drag never trips it.
+  const SAFETY_HIDE_MS = 30_000;
+  const armSafetyTimer = () => {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(hideOverlay, SAFETY_HIDE_MS);
+  };
+
   const showOverlay = (supported: string[]) => {
     if (dragActive) return;
     dragActive = true;
@@ -616,10 +999,7 @@ async function bindDragDrop() {
       .slice(0, 3)
       .map((p) => p.split(/[\\/]/).pop())
       .join(' · ');
-    // Safety net: if 'leave'/'drop' never fires (some WMs swallow it),
-    // auto-hide after 4s of no movement.
-    if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = setTimeout(hideOverlay, 4000);
+    armSafetyTimer();
   };
   const hideOverlay = () => {
     dragActive = false;
@@ -641,11 +1021,9 @@ async function bindDragDrop() {
         const supported = paths.filter((p) => kindFromPath(p));
         if (supported.length > 0) showOverlay(supported);
       } else if (t === 'over') {
-        // Keep the overlay alive while we're being hovered.
-        if (dragActive && hideTimer) {
-          clearTimeout(hideTimer);
-          hideTimer = setTimeout(hideOverlay, 4000);
-        }
+        // Keep the overlay alive while we're being hovered — push the
+        // safety timer back out so an ongoing drag never trips it.
+        if (dragActive) armSafetyTimer();
       } else if (t === 'leave') {
         hideOverlay();
       } else if (t === 'drop') {
@@ -724,6 +1102,97 @@ function detectTimezone(): string {
   }
 }
 
+/** Loose, non-blocking email check — just enough to catch obviously
+ *  malformed values ("foo", "a@b", "x@y."). Empty is valid (email is
+ *  optional). Not RFC-5322 strict on purpose. */
+function isPlausibleEmail(value: string): boolean {
+  const v = value.trim();
+  if (v === '') return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+/** True if `tz` is in the known timezone list (the datalist source).
+ *  Empty is allowed (means "use system tz"). Used to reject typed
+ *  nonsense before persisting. */
+function isKnownTimezone(tz: string): boolean {
+  const v = tz.trim();
+  if (v === '') return true;
+  return supportedTimezones().includes(v);
+}
+
+/**
+ * Best-effort check that a chosen default-save folder exists and is a
+ * directory; shows a warning toast if not, so a later Save As into it
+ * doesn't fail mysteriously. Non-blocking — settings still save. Uses the
+ * fs plugin's `stat`; any error (plugin unavailable, path out of the
+ * capability scope) is swallowed so the check never breaks the save.
+ */
+async function warnIfFolderUnusable(dir: string) {
+  try {
+    const { stat } = await import('@tauri-apps/plugin-fs');
+    const info = await stat(dir);
+    if (!info.isDirectory) {
+      toast('That default save folder isn’t a folder — saves there may fail.', 'error', 5000);
+    }
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err ?? '');
+    // A "not found" error is actionable; permission/scope errors are not,
+    // so only warn when the path genuinely doesn't resolve.
+    if (/not found|no such file|enoent/i.test(raw)) {
+      toast('That default save folder doesn’t exist — saves there may fail.', 'error', 5000);
+    } else {
+      console.warn('default-folder check skipped', err);
+    }
+  }
+}
+
+/** Show/hide an inline `.field-error` element by id with a message. */
+function setFieldError(errorElId: string, message: string | null) {
+  const el = document.getElementById(errorElId);
+  if (!el) return;
+  if (message) {
+    el.textContent = message;
+    el.hidden = false;
+  } else {
+    el.textContent = '';
+    el.hidden = true;
+  }
+}
+
+/** sessionStorage key for the in-progress wizard draft, so a mid-flow
+ *  window close doesn't lose typed input. Cleared once setup completes. */
+const WIZARD_DRAFT_KEY = 'casualoffice.wizard.draft';
+
+function saveWizardDraft() {
+  try {
+    sessionStorage.setItem(
+      WIZARD_DRAFT_KEY,
+      JSON.stringify({ name: wiz.name, email: wiz.email, timezone: wiz.timezone }),
+    );
+  } catch {
+    /* sessionStorage may be unavailable; non-fatal */
+  }
+}
+
+function clearWizardDraft() {
+  try {
+    sessionStorage.removeItem(WIZARD_DRAFT_KEY);
+  } catch {
+    /* non-fatal */
+  }
+}
+
+function loadWizardDraft(): { name: string; email: string; timezone: string } | null {
+  try {
+    const raw = sessionStorage.getItem(WIZARD_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as { name?: string; email?: string; timezone?: string };
+    return { name: d.name ?? '', email: d.email ?? '', timezone: d.timezone ?? '' };
+  } catch {
+    return null;
+  }
+}
+
 /** Full IANA time zone list when the runtime supports it, falling back
  *  to a hand-picked common subset on older browsers. */
 function supportedTimezones(): string[] {
@@ -774,19 +1243,49 @@ function bindWizard() {
   const emailInput = $<HTMLInputElement>('wiz-email');
   const tzInput = $<HTMLInputElement>('wiz-tz');
   const next1 = $<HTMLButtonElement>('wiz-next-1');
-  // Prefill timezone with the system value; user can edit.
+  // Restore any draft saved before a mid-flow window close, falling back
+  // to the detected timezone.
+  const draft = loadWizardDraft();
+  if (draft) {
+    wiz.name = draft.name;
+    wiz.email = draft.email;
+    if (draft.timezone) wiz.timezone = draft.timezone;
+  }
+  nameInput.value = wiz.name;
+  emailInput.value = wiz.email;
+  // Prefill timezone with the (draft or system) value; user can edit.
   tzInput.value = wiz.timezone;
+  next1.disabled = wiz.name.trim().length === 0;
   nameInput.addEventListener('input', () => {
     wiz.name = nameInput.value;
     next1.disabled = wiz.name.trim().length === 0;
+    saveWizardDraft();
   });
   emailInput.addEventListener('input', () => {
     wiz.email = emailInput.value;
+    // Clear any stale error as the user edits; re-validate on blur.
+    setFieldError('wiz-email-error', null);
+    saveWizardDraft();
+  });
+  emailInput.addEventListener('blur', () => {
+    setFieldError(
+      'wiz-email-error',
+      isPlausibleEmail(emailInput.value) ? null : 'That doesn’t look like an email address.',
+    );
   });
   tzInput.addEventListener('input', () => {
     wiz.timezone = tzInput.value;
+    setFieldError('wiz-tz-error', null);
+    saveWizardDraft();
+  });
+  tzInput.addEventListener('blur', () => {
+    setFieldError(
+      'wiz-tz-error',
+      isKnownTimezone(tzInput.value) ? null : 'Unknown time zone — your system time zone will be used.',
+    );
   });
   next1.addEventListener('click', () => showWizardStep(2));
+  $('wiz-skip').addEventListener('click', skipWizard);
 
   $('wiz-back-2').addEventListener('click', () => showWizardStep(1));
   $('wiz-next-2').addEventListener('click', () => {
@@ -816,11 +1315,20 @@ async function finishWizard() {
   finishBtn.disabled = true;
   finishBtn.textContent = 'Saving…';
   try {
+    const name = wiz.name.trim() || 'You';
+    // Email is optional, but never persist an obviously malformed value.
+    // Timezone is validated against the known list; nonsense falls back to
+    // the detected/empty value so we don't store garbage.
+    const email = isPlausibleEmail(wiz.email) ? wiz.email.trim() || null : null;
+    const tz = isKnownTimezone(wiz.timezone) ? wiz.timezone.trim() || null : detectTimezone() || null;
+    if (!isPlausibleEmail(wiz.email)) {
+      toast('That email looked malformed, so it wasn’t saved.', 'error', 4000);
+    }
     const profile: Profile = {
-      name: wiz.name.trim(),
-      avatar_hue: hashHue(wiz.name.trim().toLowerCase()),
-      timezone: wiz.timezone.trim() || null,
-      email: wiz.email.trim() || null,
+      name,
+      avatar_hue: hashHue(name.toLowerCase()),
+      timezone: tz,
+      email,
       avatar_path: null,
       created_at: 0,
     };
@@ -843,6 +1351,8 @@ async function finishWizard() {
     ]);
     state.settings = savedSettings;
     applyTheme(state.settings.theme);
+    broadcastTheme(state.settings.theme);
+    clearWizardDraft();
     revealWorkspace();
   } catch (err) {
     console.error('finishWizard failed', err);
@@ -858,6 +1368,43 @@ async function finishWizard() {
     errorEl.textContent = `Could not save: ${err instanceof Error ? err.message : err}`;
     finishBtn.disabled = false;
     finishBtn.textContent = 'Finish setup';
+  }
+}
+
+/**
+ * Complete setup with sensible defaults so a user is never trapped on the
+ * wizard. Name is optional → "You"; timezone falls back to detected;
+ * theme stays "system"; default folder stays unset. Persists a minimal
+ * profile + settings, then reveals the home screen — same persistence the
+ * full finish does, so the wizard doesn't re-appear next boot.
+ */
+async function skipWizard() {
+  const skipBtn = $<HTMLButtonElement>('wiz-skip');
+  skipBtn.disabled = true;
+  // Honor anything the user already typed on step 1, but only if it's valid.
+  const name = wiz.name.trim() || 'You';
+  const email = isPlausibleEmail(wiz.email) ? wiz.email.trim() || null : null;
+  const tz = (isKnownTimezone(wiz.timezone) ? wiz.timezone.trim() : '') || detectTimezone() || null;
+  const profile: Profile = {
+    name,
+    avatar_hue: hashHue(name.toLowerCase()),
+    timezone: tz,
+    email,
+    avatar_path: null,
+    created_at: 0,
+  };
+  const settings: Settings = { theme: 'system', default_save_dir: null };
+  try {
+    state.profile = await invoke<Profile>('save_profile', { profile });
+    state.settings = await invoke<Settings>('save_settings', { settings });
+    applyTheme(state.settings.theme);
+    broadcastTheme(state.settings.theme);
+    clearWizardDraft();
+    revealWorkspace();
+  } catch (err) {
+    console.error('skipWizard failed', err);
+    toast(`Could not complete setup: ${err instanceof Error ? err.message : err}`, 'error', 4500);
+    skipBtn.disabled = false;
   }
 }
 
@@ -924,6 +1471,7 @@ function showWhatsNew(
     li.textContent = h;
     list.appendChild(li);
   }
+  const previouslyFocused = document.activeElement as HTMLElement | null;
   modal.hidden = false;
   setTimeout(() => $<HTMLButtonElement>('whats-new-dismiss').focus(), 0);
 
@@ -933,12 +1481,21 @@ function showWhatsNew(
       dismiss();
     }
   };
+  // Click on the backdrop (outside the modal box) dismisses.
+  const onBackdrop = (e: MouseEvent) => {
+    if (e.target === modal) dismiss();
+  };
+  const dismissBtn = $<HTMLButtonElement>('whats-new-dismiss');
   const dismiss = async () => {
     modal.hidden = true;
     window.removeEventListener('keydown', onKey);
+    modal.removeEventListener('mousedown', onBackdrop);
+    dismissBtn.removeEventListener('click', dismiss);
+    previouslyFocused?.focus?.();
     await markVersionSeen(appVersion);
   };
-  $('whats-new-dismiss').addEventListener('click', dismiss, { once: true });
+  dismissBtn.addEventListener('click', dismiss);
+  modal.addEventListener('mousedown', onBackdrop);
   window.addEventListener('keydown', onKey);
 }
 
@@ -1017,15 +1574,25 @@ function settingsEscape(e: KeyboardEvent) {
 
 function populateSettings() {
   if (!state.profile) return;
+  setFieldError('settings-email-error', null);
+  setFieldError('settings-tz-error', null);
   renderAvatar($('settings-avatar'), state.profile);
   $<HTMLInputElement>('settings-name').value = state.profile.name;
   $<HTMLInputElement>('settings-email').value = state.profile.email ?? '';
   $<HTMLInputElement>('settings-tz').value = state.profile.timezone ?? detectTimezone();
   $<HTMLInputElement>('settings-dir').value = state.settings.default_save_dir ?? '';
   $<HTMLInputElement>('settings-privacy').checked = state.settings.privacy_mode === true;
+  // Behavior: open-where preference (defaults to "ask") and the unsaved-close
+  // warning (defaults to true when absent).
+  const openPref = state.settings.open_window_preference ?? 'ask';
+  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-open-pref]')) {
+    radio.checked = radio.value === openPref;
+  }
+  $<HTMLInputElement>('settings-warn-close').checked = state.settings.warn_on_unsaved_close !== false;
   for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-theme]')) {
     radio.checked = radio.value === state.settings.theme;
   }
+  syncThemeCardAria();
   // App version in About — cheap call, but only on settings-open to keep
   // boot light.
   invoke<string>('get_app_version')
@@ -1039,6 +1606,25 @@ function populateSettings() {
 function bindSettings() {
   $('user-chip').addEventListener('click', showSettings);
   $('settings-close').addEventListener('click', hideSettings);
+
+  // Inline, non-blocking validation on blur for the optional email and the
+  // timezone field (mirrors the wizard).
+  const settingsEmail = $<HTMLInputElement>('settings-email');
+  settingsEmail.addEventListener('input', () => setFieldError('settings-email-error', null));
+  settingsEmail.addEventListener('blur', () => {
+    setFieldError(
+      'settings-email-error',
+      isPlausibleEmail(settingsEmail.value) ? null : 'That doesn’t look like an email address.',
+    );
+  });
+  const settingsTz = $<HTMLInputElement>('settings-tz');
+  settingsTz.addEventListener('input', () => setFieldError('settings-tz-error', null));
+  settingsTz.addEventListener('blur', () => {
+    setFieldError(
+      'settings-tz-error',
+      isKnownTimezone(settingsTz.value) ? null : 'Unknown time zone — your previous setting will be kept.',
+    );
+  });
 
   $('settings-pick-avatar').addEventListener('click', async () => {
     try {
@@ -1093,6 +1679,7 @@ function bindSettings() {
       wiz.name = '';
       wiz.email = '';
       wiz.timezone = detectTimezone();
+      clearWizardDraft();
       $<HTMLInputElement>('wiz-name').value = '';
       $<HTMLInputElement>('wiz-email').value = '';
       $<HTMLInputElement>('wiz-tz').value = wiz.timezone;
@@ -1113,17 +1700,52 @@ function bindSettings() {
     const themeRadio = document.querySelector<HTMLInputElement>('input[name=settings-theme]:checked');
     const theme = (themeRadio?.value as Settings['theme']) ?? 'system';
     const dir = $<HTMLInputElement>('settings-dir').value.trim() || null;
+    // Email is optional but never persisted malformed — surface it inline
+    // and drop the bad value rather than saving nonsense silently.
+    const rawEmail = $<HTMLInputElement>('settings-email').value;
+    let email: string | null;
+    if (isPlausibleEmail(rawEmail)) {
+      setFieldError('settings-email-error', null);
+      email = rawEmail.trim() || null;
+    } else {
+      setFieldError('settings-email-error', 'That doesn’t look like an email address — not saved.');
+      email = state.profile.email; // keep the previously-stored value
+    }
+    // Timezone: validate against the known list; fall back to the existing
+    // stored value (or empty) rather than persisting something unknown.
+    const rawTz = $<HTMLInputElement>('settings-tz').value;
+    let timezone: string | null;
+    if (isKnownTimezone(rawTz)) {
+      setFieldError('settings-tz-error', null);
+      timezone = rawTz.trim() || null;
+    } else {
+      setFieldError('settings-tz-error', 'Unknown time zone — keeping your previous setting.');
+      timezone = state.profile.timezone;
+    }
     const updatedProfile: Profile = {
       ...state.profile,
       name,
-      email: $<HTMLInputElement>('settings-email').value,
-      timezone: $<HTMLInputElement>('settings-tz').value,
+      email,
+      timezone,
     };
+    // Best-effort sanity check on the default save folder so a later Save As
+    // doesn't fail mysteriously: warn if the chosen directory doesn't exist
+    // (or isn't a directory). This is non-blocking — the save still goes
+    // through — and degrades gracefully if the fs check is unavailable.
+    if (dir) {
+      await warnIfFolderUnusable(dir);
+    }
+    const openPrefRadio = document.querySelector<HTMLInputElement>(
+      'input[name=settings-open-pref]:checked',
+    );
+    const openPref = (openPrefRadio?.value as Settings['open_window_preference']) ?? 'ask';
     const updatedSettings: Settings = {
       ...state.settings,
       theme,
       default_save_dir: dir,
       privacy_mode: $<HTMLInputElement>('settings-privacy').checked,
+      open_window_preference: openPref,
+      warn_on_unsaved_close: $<HTMLInputElement>('settings-warn-close').checked,
     };
     const saveBtn = $<HTMLButtonElement>('settings-save');
     const originalLabel = saveBtn.textContent ?? 'Save changes';
@@ -1133,6 +1755,19 @@ function bindSettings() {
       state.profile = await invoke<Profile>('save_profile', { profile: updatedProfile });
       state.settings = await invoke<Settings>('save_settings', { settings: updatedSettings });
       applyTheme(state.settings.theme);
+      broadcastTheme(state.settings.theme);
+      // Apply privacy mode live to every open window (launcher + all
+      // document windows), not just future ones. save_settings already
+      // does a best-effort apply, but this explicit call lets us surface a
+      // per-window failure instead of silently implying success. On
+      // Linux/WebKitGTK there's no compositor API for this, so the toggle
+      // is a stored preference only (the Settings copy says as much).
+      await invoke('apply_privacy_mode', { enabled: updatedSettings.privacy_mode === true }).catch(
+        (err) => {
+          console.warn('apply_privacy_mode failed', err);
+          toast('Privacy mode could not be applied to every open window.', 'error', 4500);
+        },
+      );
       await renderAvatar($('user-avatar'), state.profile);
       const chipName = document.getElementById('user-chip-name');
       if (chipName) chipName.textContent = state.profile.name.split(/\s+/)[0];
@@ -1165,6 +1800,14 @@ async function boot() {
   bindHomePanel();
   bindSettings();
   bindShortcuts();
+  // Keep theme-card aria-checked in sync whenever any theme radio changes.
+  document.addEventListener('change', (e) => {
+    const t = e.target as HTMLElement;
+    if (t instanceof HTMLInputElement && t.type === 'radio' && t.closest('.theme-card')) {
+      syncThemeCardAria();
+    }
+  });
+  syncThemeCardAria();
   // Drag-drop binding is fire-and-forget; failures shouldn't block boot.
   bindDragDrop();
 
