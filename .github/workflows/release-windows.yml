@@ -84,9 +84,11 @@ jobs:
             apps/shell/src-tauri/target
           key: cargo-${{ runner.os }}-${{ hashFiles('apps/shell/src-tauri/Cargo.lock') }}
 
-      - name: Clone docx editor at bridge-wiring branch
+      - name: Clone docx editor (main)
         run: |
-          git clone --depth 1 --branch desk_v0.0.0/bridge-wiring \
+          # The desktop bridge + offline-first flag now live in main (the old
+          # desk_v0.0.0/bridge-wiring branch was folded in), so build from main.
+          git clone --depth 1 --branch main \
             https://github.com/CasualOffice/docs.git docx
           (cd docx/docx-editor && bun install)
 
