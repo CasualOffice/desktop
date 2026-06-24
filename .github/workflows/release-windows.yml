@@ -120,6 +120,7 @@ jobs:
         # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
         # in the Tauri shell. main's `build` script omits --base by design (the
         # web deploy needs an absolute base for SPA sub-routes), so pass it here.
+        # The "Verify editor asset paths are relative" step below guards this.
         run: pnpm exec vite build --base=./
 
       - name: Install shell deps
@@ -128,6 +129,22 @@ jobs:
       - name: Copy editor dists into shell
         working-directory: apps/shell
         run: ./scripts/copy-editors.sh
+
+      - name: Verify editor asset paths are relative
+        # Fail the release if an editor shipped absolute /assets/ paths
+        # (built without a relative base) — that produces a blank editor
+        # window under /docx/ or /sheets/.
+        run: |
+          fail=0
+          for ed in docx sheets; do
+            if grep -Eq '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html"; then
+              echo "ERROR: $ed editor has absolute asset paths (build with --base=./ / PAGES_BASE=./)" >&2
+              grep -E '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html" >&2
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ] && echo "OK: docx + sheets bundles use relative asset paths."
+          exit $fail
 
       - name: Build shell (vite)
         working-directory: apps/shell
