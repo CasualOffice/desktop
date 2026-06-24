@@ -48,7 +48,7 @@ WKWebView is part of macOS — no extra system deps.
 ```bash
 # Clone Casual Office
 git clone https://github.com/CasualOffice/desktop.git
-cd casual-office
+cd desktop
 
 # Clone the two editor source repos in-tree (separate origins, gitignored here)
 git clone https://github.com/CasualOffice/docs.git
@@ -67,9 +67,9 @@ pnpm tauri:dev
 ```
 
 The launcher's Vite dev server runs at `http://localhost:5170`. Tauri opens
-a webview pointed at it. Editor iframes are still served from the *built*
-copies in `apps/shell/public/{docx,sheets}/`, so after editing the editors
-themselves you need:
+a webview pointed at it. Each document window loads the editor from its
+*built* copy in `apps/shell/public/{docx,sheets}/`, so after editing the
+editors themselves you need:
 
 ```bash
 pnpm copy:editors     # if dist is already current
@@ -112,8 +112,7 @@ First launch shows the setup wizard. Per-user state lives at
 | `cargo tauri build` errors about `libwebkit2gtk-4.1` | apt deps missing | install the prerequisite list above |
 | Editor renders but assets 404 with `text/html` MIME | editor wasn't built with `--base=./` | re-run `pnpm prep:editors` |
 | Wizard finishes but you stay on "Saving…" | A custom Tauri command hangs | `RUST_LOG=debug ./...deskapp-shell` to find the failing command |
-| Blank/black iframe content | Editor JS crashed inside the iframe | Right-click in the live app → Inspect Element → console. The bootstrap also pins error overlays to the top of the iframe. |
-| Drag-tab-out detaches even when reordering | dragend `clientY` heuristic too aggressive | adjust `DETACH_THRESHOLD_PX` in `apps/shell/src/main.ts` |
+| Blank/black document window | Editor JS crashed in the doc window | Right-click in the live app → Inspect Element → console. The bootstrap also pins error overlays to the top of the window. |
 | `pkill -f deskapp-shell` doesn't free the port | Lingering Vite dev server | `pkill -f vite` |
 
 ## Regenerating the icon
