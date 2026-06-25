@@ -618,7 +618,58 @@ input[type='text']:focus { border-color: var(--accent); box-shadow: 0 0 0 3px co
 .recent-card-time {
   font-size: 11px;
   color: var(--muted);
-  margin-top: 2px;
+}
+/* Footer row under the path: a small colored type badge + the relative
+   time, so each entry reads its kind at a glance without a real
+   thumbnail. */
+.recent-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  min-width: 0;
+}
+.recent-type-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.recent-type-badge.docx {
+  color: #1d4ed8;
+  background: #2563eb1a;
+}
+.recent-type-badge.sheets {
+  color: #15734a;
+  background: #1e7a4f1a;
+}
+:root[data-theme='dark'] .recent-type-badge.docx {
+  color: #93b4fb;
+  background: #2563eb33;
+}
+:root[data-theme='dark'] .recent-type-badge.sheets {
+  color: #7fd3a8;
+  background: #1e7a4f40;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .recent-type-badge.docx {
+    color: #93b4fb;
+    background: #2563eb33;
+  }
+  :root[data-theme='system'] .recent-type-badge.sheets {
+    color: #7fd3a8;
+    background: #1e7a4f40;
+  }
+}
+.recent-card-footer .recent-card-time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pin-mark {

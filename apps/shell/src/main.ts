@@ -562,6 +562,26 @@ function fileIconSvg(kind: DocKind): string {
 </svg>`;
 }
 
+/** Short, human-facing type label for a recent entry, derived from the
+ *  file extension so a .csv reads "CSV" rather than the generic
+ *  "Spreadsheet". Falls back to the editor family for unknown cases. */
+function typeLabelFor(path: string, kind: DocKind): string {
+  const ext = path.toLowerCase().split('.').pop() ?? '';
+  const byExt: Record<string, string> = {
+    docx: 'Word',
+    txt: 'Text',
+    md: 'Markdown',
+    markdown: 'Markdown',
+    xlsx: 'Excel',
+    xlsm: 'Excel',
+    ods: 'Calc',
+    csv: 'CSV',
+    tsv: 'TSV',
+    tab: 'TSV',
+  };
+  return byExt[ext] ?? (kind === 'docx' ? 'Document' : 'Spreadsheet');
+}
+
 async function refreshRecents() {
   // Only show the loading state when we have nothing to display yet —
   // a background refresh over an existing list shouldn't blank it out.
@@ -680,7 +700,10 @@ function renderRecents() {
             ${escapeHtml(basename(f.path))}
           </div>
           <div class="recent-card-path">${escapeHtml(dirname(f.path))}</div>
-          <div class="recent-card-time">${escapeHtml(relTime(f.last_opened))}</div>
+          <div class="recent-card-footer">
+            <span class="recent-type-badge ${f.kind}">${escapeHtml(typeLabelFor(f.path, f.kind))}</span>
+            <span class="recent-card-time">${escapeHtml(relTime(f.last_opened))}</span>
+          </div>
         </div>
       `;
       card.addEventListener('click', () => openRecent(f));
@@ -1663,30 +1686,44 @@ function bindSettings() {
   });
 
   $('settings-rerun-wizard').addEventListener('click', async () => {
-    if (!confirm('Reset your profile and re-run the setup wizard?\n\nYour recent files and theme will be kept; only your name, email, timezone, and profile picture will be cleared.')) {
-      return;
+    const ok = await confirmDialog({
+      title: 'Re-run the setup wizard?',
+      body:
+        'This walks you back through the welcome steps with your current details prefilled. ' +
+        'Nothing is cleared until you finish — your recent files and theme are kept, and your ' +
+        'existing profile stays as-is if you back out.',
+      confirmLabel: 'Run setup',
+      cancelLabel: 'Stay here',
+    });
+    if (!ok) return;
+    // Re-show the first-run wizard WITHOUT wiping the stored profile — the
+    // wizard's finish/skip handlers overwrite the profile on completion, so
+    // closing the window mid-flow leaves the original profile intact. We
+    // prefill from the live profile so the user tweaks rather than retypes.
+    hideSettings();
+    $('workspace').hidden = true;
+    $('wizard').hidden = false;
+    showWizardStep(1);
+    const p = state.profile;
+    wiz.name = p && p.name !== 'You' ? p.name : '';
+    wiz.email = p?.email ?? '';
+    wiz.timezone = p?.timezone ?? detectTimezone();
+    wiz.theme = state.settings.theme;
+    wiz.dir = state.settings.default_save_dir ?? null;
+    // Drop any stale half-finished draft so it doesn't clobber the prefill.
+    clearWizardDraft();
+    $<HTMLInputElement>('wiz-name').value = wiz.name;
+    $<HTMLInputElement>('wiz-email').value = wiz.email;
+    $<HTMLInputElement>('wiz-tz').value = wiz.timezone;
+    // Re-sync the theme + default-dir controls the later steps read from.
+    for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=theme]')) {
+      radio.checked = radio.value === wiz.theme;
     }
-    try {
-      await invoke('reset_profile');
-      state.profile = null;
-      hideSettings();
-      $('workspace').hidden = true;
-      $('wizard').hidden = false;
-      showWizardStep(1);
-      // Prefill the wizard with the previous values so the user can
-      // tweak rather than retype everything. wiz.name remains from any
-      // earlier wizard run; clear so the field is empty for retype.
-      wiz.name = '';
-      wiz.email = '';
-      wiz.timezone = detectTimezone();
-      clearWizardDraft();
-      $<HTMLInputElement>('wiz-name').value = '';
-      $<HTMLInputElement>('wiz-email').value = '';
-      $<HTMLInputElement>('wiz-tz').value = wiz.timezone;
-      $<HTMLInputElement>('wiz-name').focus();
-    } catch (err) {
-      $('settings-error').textContent = `Could not reset: ${err}`;
-    }
+    syncThemeCardAria();
+    $<HTMLInputElement>('wiz-dir').value = wiz.dir ?? '';
+    // Enable/disable step-1 Next to match the prefilled name.
+    $<HTMLButtonElement>('wiz-next-1').disabled = wiz.name.trim().length === 0;
+    $<HTMLInputElement>('wiz-name').focus();
   });
 
   $('settings-save').addEventListener('click', async () => {
