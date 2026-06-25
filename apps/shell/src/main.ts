@@ -280,6 +280,68 @@ function fileErrorMessage(verb: string, label: string, err: unknown): string {
   return `${verb} “${label}”: ${friendlyError(err)}`;
 }
 
+/**
+ * Launcher-side pre-flight validation of a file we're about to hand to an
+ * editor window. Catches the two failures that otherwise only surface *inside*
+ * the editor (UX-AUDIT §3):
+ *   1. the path no longer exists / isn't readable, and
+ *   2. a ZIP-based Office file (.docx/.xlsx/.xlsm/.ods) whose first bytes
+ *      aren't the ZIP local-file-header magic "PK\x03\x04" — i.e. a renamed
+ *      legacy OLE .doc/.xls, a truncated download, or an unrelated file with
+ *      the wrong extension. The editors sniff this too and error, but only
+ *      after a cold-start; catching it here gives an immediate, friendly,
+ *      launcher-side message and avoids spawning a window that just shows an
+ *      error.
+ *
+ * Plain-text family files (.txt/.md/.csv/.tsv/.tab) have no signature, so we
+ * only check existence for them. Returns a human-facing reason string when the
+ * file can't be opened, or null when it looks openable. Any unexpected IPC
+ * failure returns null (fail-open) so a flaky check never blocks a legitimate
+ * open — the editor remains the final arbiter.
+ */
+async function preflightOpenError(path: string): Promise<string | null> {
+  // 1. Existence.
+  try {
+    const exists = await invoke<boolean>('file_exists', { path });
+    if (!exists) return 'the file no longer exists at that location.';
+  } catch {
+    return null; // fail-open: let the editor try.
+  }
+
+  // 2. ZIP magic for the OOXML / ODF container formats.
+  const ext = path.toLowerCase().split('.').pop() ?? '';
+  const zipBased = ext === 'docx' || ext === 'xlsx' || ext === 'xlsm' || ext === 'ods';
+  if (!zipBased) return null;
+
+  try {
+    const head = await invoke<number[]>('read_document_chunk', {
+      path,
+      offset: 0,
+      length: 4,
+    });
+    // Empty file: nothing for the editor to parse — flag it now.
+    if (head.length === 0) return 'the file is empty.';
+    // A valid ZIP container starts with "PK\x03\x04" (local file header) or,
+    // for an empty archive, "PK\x05\x06". Anything else with these extensions
+    // is almost always a legacy OLE .doc/.xls renamed, or a corrupt file.
+    const isPk = head[0] === 0x50 && head[1] === 0x4b; // "PK"
+    const isLocalHeader = isPk && head[2] === 0x03 && head[3] === 0x04;
+    const isEmptyArchive = isPk && head[2] === 0x05 && head[3] === 0x06;
+    // OLE compound-file (old .doc/.xls) magic: D0 CF 11 E0.
+    const isOle =
+      head[0] === 0xd0 && head[1] === 0xcf && head[2] === 0x11 && head[3] === 0xe0;
+    if (isOle) {
+      return 'this looks like an older Office format (.doc/.xls), which isn’t supported — re-save it as .docx/.xlsx.';
+    }
+    if (!isLocalHeader && !isEmptyArchive) {
+      return 'the file appears to be corrupt or isn’t a real Office document.';
+    }
+  } catch {
+    return null; // fail-open on a read hiccup.
+  }
+  return null;
+}
+
 // =============================================================================
 // In-app confirm modal — reuses the .modal / .modal-backdrop visual
 // language. Resolves true on confirm, false on cancel / Escape / backdrop.
@@ -390,6 +452,28 @@ const state = {
 };
 
 function openOrReplaceLauncher(kind: DocKind, filePath: string | null) {
+  // For a file-backed open, run a launcher-side pre-flight so a missing or
+  // clearly-corrupt file is caught here with a friendly message instead of
+  // only inside a freshly-spawned editor window (UX-AUDIT §3). New/untitled
+  // documents (filePath === null) have nothing to validate — open directly.
+  if (filePath) {
+    void preflightOpenError(filePath).then((reason) => {
+      if (reason) {
+        const label = basename(filePath);
+        toast(`Can’t open “${label}”: ${reason}`, 'error', 5500);
+        setStatus(`Couldn’t open ${label}`, 4000);
+        return;
+      }
+      proceedOpen(kind, filePath);
+    });
+    return;
+  }
+  proceedOpen(kind, filePath);
+}
+
+/** Route an open (already validated, if file-backed) through the user's
+ *  open-where preference / dialog. */
+function proceedOpen(kind: DocKind, filePath: string | null) {
   const pref = state.settings.open_window_preference ?? 'ask';
   if (pref === 'same') return doOpen(kind, filePath, 'same');
   if (pref === 'new') return doOpen(kind, filePath, 'new');
@@ -750,7 +834,14 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
     { label: 'Open', run: () => openRecent(f), primary: true },
     {
       label: 'Open in new window',
-      run: () => {
+      run: async () => {
+        // Same launcher-side pre-flight as the normal open path so a
+        // missing/corrupt file is caught before a window is spawned.
+        const reason = await preflightOpenError(f.path);
+        if (reason) {
+          toast(`Can’t open “${basename(f.path)}”: ${reason}`, 'error', 5500);
+          return;
+        }
         invoke('add_recent_file', { path: f.path }).catch(() => undefined);
         invoke('open_document_window', { kind: f.kind, filePath: f.path })
           .then(() => toast(`Opened ${basename(f.path)}`, 'success'))

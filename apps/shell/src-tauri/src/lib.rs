@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
@@ -92,6 +93,155 @@ struct SaveState {
 #[derive(Default)]
 struct DirtyState {
     flags: Mutex<HashMap<String, bool>>,
+}
+
+/// Per-window filesystem watchers for external-change detection. Keyed by the
+/// Tauri window label (e.g. "doc-3"). Each open document with a real on-disk
+/// path gets a `notify` watcher on that file; when the OS reports the file was
+/// renamed/moved/deleted or modified outside the editor, we emit a
+/// `deskapp://file-changed` event to that window so the editor can warn the
+/// user that its in-memory path is now stale. The watcher handle is held here
+/// so it lives as long as the window does and is dropped (stopping the watch)
+/// when the window closes. A watch that fails to start is simply absent from
+/// this map — opening the document still proceeds.
+#[derive(Default)]
+struct WatchState {
+    watchers: Mutex<HashMap<String, RecommendedWatcher>>,
+}
+
+/// Classify a `notify` event into the coarse kind the editor cares about.
+/// We only emit on the three cases that invalidate the editor's bound path:
+///   - "removed"  → the file was deleted (or renamed away from this path)
+///   - "renamed"  → an explicit rename/move was reported
+///   - "modified" → contents changed on disk outside the editor
+///
+/// Access/metadata/other noise is ignored (returns None) so we don't spam the
+/// editor with events it can't act on.
+fn classify_fs_event(kind: &EventKind) -> Option<&'static str> {
+    use notify::event::{ModifyKind, RenameMode};
+    match kind {
+        EventKind::Remove(_) => Some("removed"),
+        // A rename can surface either as Modify(Name(..)) (most backends) or,
+        // on some platforms, as a Remove of the old path. Treat the explicit
+        // name-change variants as "renamed"; the "To" side of a two-event
+        // rename also lands here.
+        EventKind::Modify(ModifyKind::Name(RenameMode::From))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::To))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => Some("renamed"),
+        EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => {
+            Some("modified")
+        }
+        _ => None,
+    }
+}
+
+/// Start watching the on-disk `path` backing the document in window `label`.
+/// On any external change (remove/rename/modify), emit a `deskapp://file-changed`
+/// event to that window carrying `{ kind, path }`, and — on removal — drop the
+/// path from the recents list (it no longer exists, so it shouldn't reappear in
+/// the launcher's recent files). The watcher handle is stored in `WatchState`
+/// keyed by `label` so it's torn down when the window closes.
+///
+/// Failures (e.g. the platform backend can't watch this path) are logged to
+/// stderr and otherwise ignored — a watch problem must never block or crash the
+/// open of a document.
+///
+/// EVENT CONTRACT (documented for the editor repos to wire UI against):
+///   event name: `deskapp://file-changed`
+///   payload:    `{ "kind": "removed" | "renamed" | "modified", "path": "<abs path>" }`
+///   delivery:   emitted only to the document window whose file changed.
+fn start_file_watch(app: &AppHandle, label: &str, path: &str) {
+    let watch_path = std::path::Path::new(path).to_path_buf();
+    // Watch the parent directory (non-recursively) rather than the file
+    // itself: on most platforms a watch on the file's inode stops firing once
+    // the file is renamed/deleted, which is exactly the case we most need to
+    // detect. Watching the directory and filtering by filename catches the
+    // rename/delete reliably. If the file has no parent (root), fall back to
+    // watching the path directly.
+    let (watch_target, recursive) = match watch_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            (parent.to_path_buf(), RecursiveMode::NonRecursive)
+        }
+        _ => (watch_path.clone(), RecursiveMode::NonRecursive),
+    };
+
+    let app_for_cb = app.clone();
+    let label_for_cb = label.to_string();
+    let path_for_cb = path.to_string();
+    let watched_file = watch_path.clone();
+
+    let mut watcher = match notify::recommended_watcher(
+        move |res: notify::Result<notify::Event>| {
+            let event = match res {
+                Ok(ev) => ev,
+                Err(e) => {
+                    eprintln!("file-watch: error event for {path_for_cb}: {e}");
+                    return;
+                }
+            };
+            let Some(kind) = classify_fs_event(&event.kind) else {
+                return;
+            };
+            // Directory watch reports every file in the dir — only react when
+            // the event touches the specific file this window has open.
+            let touches_file = event.paths.iter().any(|p| p == &watched_file);
+            if !touches_file {
+                return;
+            }
+            // On removal, also drop the now-dead path from recents so the
+            // launcher doesn't keep offering a file that's gone.
+            if kind == "removed" {
+                if let Some(state) = app_for_cb.try_state::<RecentsState>() {
+                    let mut list = state.list.lock().unwrap();
+                    let before = list.len();
+                    list.retain(|r| r.path != path_for_cb);
+                    if list.len() != before {
+                        let snapshot = list.clone();
+                        drop(list);
+                        let _ = save_recents(&app_for_cb, &snapshot);
+                    }
+                }
+            }
+            if let Some(window) = app_for_cb.get_webview_window(&label_for_cb) {
+                let _ = window.emit(
+                    "deskapp://file-changed",
+                    serde_json::json!({ "kind": kind, "path": path_for_cb }),
+                );
+            }
+        },
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("file-watch: could not create watcher for {path}: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = watcher.watch(&watch_target, recursive) {
+        eprintln!(
+            "file-watch: could not watch {}: {e}",
+            watch_target.display()
+        );
+        return;
+    }
+
+    if let Some(state) = app.try_state::<WatchState>() {
+        state
+            .watchers
+            .lock()
+            .unwrap()
+            .insert(label.to_string(), watcher);
+    }
+}
+
+/// Stop and drop the filesystem watcher for window `label`, if any. Called when
+/// a document window is destroyed so we don't leak watchers (or keep firing
+/// events at a window that no longer exists).
+fn stop_file_watch(app: &AppHandle, label: &str) {
+    if let Some(state) = app.try_state::<WatchState>() {
+        state.watchers.lock().unwrap().remove(label);
+    }
 }
 
 /// Deterministic temp path for a chunked save: a sibling of the real file
@@ -345,6 +495,9 @@ async fn open_document_window(
 
     if let Some(p) = file_path.as_deref() {
         touch_recent(&app, &state, p);
+        // Detect external rename/move/delete/modify of the open file. Best
+        // effort — a watch failure is logged and ignored, never fatal.
+        start_file_watch(&app, &label, p);
     }
 
     Ok(title)
@@ -412,6 +565,9 @@ fn attach_unsaved_guard(app: &AppHandle, window: &tauri::WebviewWindow) {
                 .lock()
                 .unwrap()
                 .remove(&label);
+            // Tear down the file-change watcher for this window so we don't
+            // leak watchers or emit events at a window that's gone.
+            stop_file_watch(&handle, &label);
         }
         _ => {}
     });
@@ -1077,6 +1233,9 @@ fn open_file_path(app: &AppHandle, path: String) {
             let _ = window.set_content_protected(true);
         }
         attach_unsaved_guard(app, &window);
+        // Watch the file for external rename/move/delete/modify while it's
+        // open (best-effort; a watch failure never blocks the open).
+        start_file_watch(app, &label, &path);
         let w = window.clone();
         std::thread::spawn(move || {
             for delay_ms in [250u64, 800, 1500] {
@@ -1128,6 +1287,7 @@ pub fn run() {
             });
             app.manage(SaveState::default());
             app.manage(DirtyState::default());
+            app.manage(WatchState::default());
             // (Earlier prototype attached a native menu bar via
             // tauri::menu::Menu. Removed — visual treatment didn't fit
             // the launcher's home-screen layout. Keyboard shortcuts that
@@ -1347,6 +1507,47 @@ mod save_tests {
         commit_save_impl(&state, path.clone()).unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), b"helloworld");
+    }
+
+    #[test]
+    fn classify_fs_event_maps_only_actionable_kinds() {
+        use notify::event::{
+            AccessKind, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind, RenameMode,
+        };
+        use notify::EventKind;
+
+        // Removal → "removed".
+        assert_eq!(
+            classify_fs_event(&EventKind::Remove(RemoveKind::File)),
+            Some("removed")
+        );
+        // Name-change variants → "renamed".
+        assert_eq!(
+            classify_fs_event(&EventKind::Modify(ModifyKind::Name(RenameMode::From))),
+            Some("renamed")
+        );
+        assert_eq!(
+            classify_fs_event(&EventKind::Modify(ModifyKind::Name(RenameMode::Both))),
+            Some("renamed")
+        );
+        // Content change → "modified".
+        assert_eq!(
+            classify_fs_event(&EventKind::Modify(ModifyKind::Data(DataChange::Content))),
+            Some("modified")
+        );
+        // Noise we deliberately ignore.
+        assert_eq!(
+            classify_fs_event(&EventKind::Access(AccessKind::Read)),
+            None
+        );
+        assert_eq!(
+            classify_fs_event(&EventKind::Create(CreateKind::File)),
+            None
+        );
+        assert_eq!(
+            classify_fs_event(&EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))),
+            None
+        );
     }
 
     #[test]

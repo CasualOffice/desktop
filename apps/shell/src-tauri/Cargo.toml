@@ -19,6 +19,9 @@ tauri-plugin-fs = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Filesystem watcher for external-change detection on open documents
+# (rename/move/delete/external-modify of the file the user is editing).
+notify = "8"
 
 [features]
 default = ["custom-protocol"]
