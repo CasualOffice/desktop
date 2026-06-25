@@ -57,19 +57,20 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Setup Node + pnpm
-        # No `version:` here on purpose — pnpm/action-setup@v4 picks
-        # up the version from package.json's `packageManager` field
-        # (pnpm@9.15.9). Specifying both causes ERR_PNPM_BAD_PM_VERSION.
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node 20
+      - name: Setup Node 22
+        # Node 22 is REQUIRED: the vendored Univer fork's engine-render
+        # `prepare` hook runs `node --experimental-strip-types`, which Node 20
+        # rejects (the release would die in setup-fork.sh on Node 20).
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: 'pnpm'
+          node-version: 22
+
+      - name: Enable corepack (pnpm per each package's packageManager)
+        # corepack resolves the exact pnpm version from each repo's
+        # `packageManager` field — deskApp uses pnpm@9.x, sheets + the Univer
+        # fork use pnpm@10.x. pnpm/action-setup would pin one global version
+        # and mismatch the sheets lockfile under --frozen-lockfile.
+        run: corepack enable
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
