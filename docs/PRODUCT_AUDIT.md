@@ -183,7 +183,7 @@ Playwright is the harness; tests live in `apps/shell/tests/`
 
 | Gap | Sev |
 |---|---|
-| No Rust unit tests for the atomic save state machine (`begin/write/commit`, EXDEV path, interrupted-commit) — the most data-critical code is only exercised via the JS bridge | S1 |
+| ~~No Rust unit tests for the atomic save state machine~~ — **CLOSED.** `save_tests` in `lib.rs` covers the `begin/write/commit` cycle directly: exact-byte roundtrip, the abort-safety invariant (begin+write without commit leaves the real file untouched), atomic replace of an existing file, out-of-order offset chunks, sibling-temp/EXDEV path, and state-loss fallback. The command bodies were split into `*_impl` helpers so the machine is testable without a Tauri runtime. | ~~S1~~ Done |
 | No round-trip **fidelity corpus** (open real `.docx`/`.xlsx` → save → diff) | S1 |
 | No visual-regression snapshots (`toMatchSnapshot`) — screenshots are manual | S2 |
 | No close-guard integration test (dirty → close → confirm/cancel) | S2 |
@@ -223,7 +223,7 @@ Ordered by impact on shippability.
 |---|---|---|---|
 | 1 | **Validate macOS + Windows release builds** and decide on signing/notarization | S1 | Cross-OS is the headline promise; only Linux is proven. Unsigned installs suppress adoption. |
 | 2 | **Round-trip fidelity corpus** (open → save → diff real Office files) | S1 | The one place a silent regression destroys user trust *and* data. |
-| 3 | **Rust unit tests for the atomic-save state machine** (incl. EXDEV / interrupted commit) | S1 | The most data-critical code path has no direct test. |
+| 3 | ~~**Rust unit tests for the atomic-save state machine**~~ — **DONE** (`save_tests` in `lib.rs`; 6 tests covering roundtrip, abort-safety, atomic replace, offset chunks, EXDEV-sibling, state-loss) | ~~S1~~ | ~~The most data-critical code path has no direct test.~~ Now directly tested. |
 | 4 | **Editor loading indicator** + **"Saved/Modified" state** | S1 | Cold-start blank window + a stateless Save button read as "is it working?"; cheap, high trust value. |
 | 5 | **Editor accessibility pass** (screen-reader / keyboard / high-contrast) | S1 | Launcher started; editors untouched. Needed for a credible release. |
 | 6 | **Tokens-only DS import** (Option B) to kill token duplication | S2 | Removes a live drift hazard for ~a day of work. |
