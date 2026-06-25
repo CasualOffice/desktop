@@ -30,14 +30,44 @@ What still gates a *confident* release:
 | Data-integrity (atomic save, close guard, chunked IPC) | **Met** |
 | Blank-editor / base-path bug | **Met (fixed)** |
 | Offline fonts | **Met (fixed)** |
-| macOS / Windows builds validated & **signed** | **Open** — pipelines exist, builds unsigned/unproven |
+| Icon-font footprint (3.9 MB Material Symbols per editor) | **Met** — subset to ~90 KB in both editors, ligature coverage HarfBuzz-proven (docx 139/139, sheets 165/165) |
+| External file-change detection (rename/move/delete of open file) | **Met (pending merge)** — shell-side `notify` watcher + `deskapp://file-changed` event |
+| Native pickers for Save As / Export / PDF (no phantom downloads) | **Met** — sheets + docx export paths route through the bridge picker |
+| Accessibility pass on the editors | **In progress** — docx + sheets toolbar/menu/ribbon are labeled + keyboard-navigable; full screen-reader sweep still open |
+| macOS / Windows builds validated & **signed** | **Open (deferred)** — explicitly out of scope for now |
 | Fidelity test corpus (round-trip data-loss confidence) | **Open** |
 | Design-system adoption decision | **Open** — `casual-office-ui` exists but is unused by the shell |
-| Accessibility pass on the editors | **Open** — launcher started, editors untouched |
 
-A pre-release that ships the Linux binary, names the fidelity and
-platform caveats, and keeps the unsigned-build warning is honest and
-useful. A "1.0" claim is not yet defensible.
+A pre-release that ships the Linux binary, names the fidelity caveat, and
+keeps the unsigned-build warning is honest and useful. A "1.0" claim is
+not yet defensible — but the data-integrity, footprint, and export/open
+UX gaps that mattered most are now closed.
+
+### Landed since this audit (2026-06-25)
+
+Code fixes (merged unless noted), each verified by build/test before landing:
+
+- **macOS "Open with" → editor** now opens (handles the `RunEvent::Opened`
+  Apple-Event path; argv-only path covered Linux/Windows). *Needs verifying
+  on a real mac build.*
+- **Atomic-save state machine** now has direct Rust tests (6 cases:
+  abort-safety, atomic replace, offset chunks, EXDEV-sibling, state-loss).
+- **Zoom overlay misplacement (docx)**: table/text-box "Format" chips +
+  resize handles no longer double-scale under zoom; selection highlight no
+  longer lands mid-`transform`-transition (transition dropped → zoom snaps,
+  fixing both the zoom and panel-slide cases).
+- **Save As / Export / PDF open the native picker** (no phantom
+  `~/Downloads` writes): sheets Save-As-xlsx + PDF; docx Export ODT/MD/TXT,
+  Make-a-copy, Email-as-attachment, markdown-save, and Translate export.
+- **Icon-font subset** (above) — ~7.6 MB of bloat removed per install.
+- **External file-change detection** — shell watcher + event (pending merge).
+- **Editor a11y (focused)** — labels + keyboard nav on docx/sheets toolbar,
+  menubar, ribbon, sheet tabs.
+- **Reproducible build scripts** (`build-docx.sh`/`build-sheets.sh`:
+  submodules + Univer fork + SDK + Node 22) so a clean checkout builds.
+
+Open branches awaiting merge: `feat/shell-file-watch-and-ux`,
+`feat/rerun-wizard-and-recent-polish`.
 
 ---
 
