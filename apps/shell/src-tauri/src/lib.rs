@@ -526,27 +526,30 @@ async fn save_document(path: String, bytes: Vec<u8>) -> Result<(), String> {
 /// save — the editor then calls write_save_chunk in a loop, then
 /// commit_save_document. Writing into a temp file and renaming only on commit
 /// keeps a failed save from corrupting the user's real file.
+/// Core of `begin_save_document`, split out so the atomic-save state machine
+/// is unit-testable without a Tauri runtime (the command just unwraps the
+/// `State` and delegates).
+fn begin_save_impl(state: &SaveState, path: String) -> Result<(), String> {
+    let tmp = save_temp_path(&path);
+    std::fs::File::create(&tmp)
+        .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+    state.in_progress.lock().unwrap().insert(path, tmp);
+    Ok(())
+}
+
 #[tauri::command]
 fn begin_save_document(
     state: tauri::State<'_, SaveState>,
     path: String,
 ) -> Result<(), String> {
-    let tmp = save_temp_path(&path);
-    std::fs::File::create(&tmp)
-        .map_err(|e| format!("create {}: {e}", tmp.display()))?;
-    state
-        .in_progress
-        .lock()
-        .unwrap()
-        .insert(path, tmp);
-    Ok(())
+    begin_save_impl(state.inner(), path)
 }
 
 /// Write a slice of the in-progress save into the temp file for `path`.
 /// begin_save_document must run first to create the temp file.
-#[tauri::command]
-fn write_save_chunk(
-    state: tauri::State<'_, SaveState>,
+/// Core of `write_save_chunk` (see `begin_save_impl` for the split rationale).
+fn write_save_chunk_impl(
+    state: &SaveState,
     path: String,
     offset: u64,
     bytes: Vec<u8>,
@@ -573,15 +576,22 @@ fn write_save_chunk(
     Ok(())
 }
 
+#[tauri::command]
+fn write_save_chunk(
+    state: tauri::State<'_, SaveState>,
+    path: String,
+    offset: u64,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    write_save_chunk_impl(state.inner(), path, offset, bytes)
+}
+
 /// Finalize a chunked save: fsync the temp file, then atomically rename it
 /// onto the real `path`. Last step of the save contract. After this returns
 /// Ok, the real file holds exactly the bytes written across the
 /// write_save_chunk calls; before it, the real file is untouched.
-#[tauri::command]
-fn commit_save_document(
-    state: tauri::State<'_, SaveState>,
-    path: String,
-) -> Result<(), String> {
+/// Core of `commit_save_document` (see `begin_save_impl` for the rationale).
+fn commit_save_impl(state: &SaveState, path: String) -> Result<(), String> {
     let tmp = state
         .in_progress
         .lock()
@@ -602,6 +612,14 @@ fn commit_save_document(
     std::fs::rename(&tmp, &path)
         .map_err(|e| format!("commit {} -> {path}: {e}", tmp.display()))?;
     Ok(())
+}
+
+#[tauri::command]
+fn commit_save_document(
+    state: tauri::State<'_, SaveState>,
+    path: String,
+) -> Result<(), String> {
+    commit_save_impl(state.inner(), path)
 }
 
 /// Report the unsaved-changes state of a document window. The editor calls
@@ -1174,8 +1192,29 @@ pub fn run() {
             broadcast_theme,
             get_app_version,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // macOS file associations do NOT pass the path in argv — the OS
+            // sends an Apple Event that Tauri surfaces as `RunEvent::Opened`.
+            // Without this arm, right-click → "Open with Casual Office" (and
+            // double-click on a registered type) launches the app but the file
+            // path is dropped, so no editor window ever opens. The argv path in
+            // setup()/single-instance only covers Linux + Windows. (Gated to
+            // macOS/iOS — `RunEvent::Opened` only exists / fires there.)
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                for url in urls {
+                    if let Ok(path) = url.to_file_path() {
+                        if let Some(p) = path.to_str() {
+                            if DocKind::from_path(p).is_some() {
+                                open_file_path(_app, p.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        });
 }
 
 fn urlencoding_lite(s: &str) -> String {
@@ -1192,4 +1231,140 @@ fn urlencoding_lite(s: &str) -> String {
         }
     }
     out
+}
+
+// --- Atomic-save state-machine tests -----------------------------------------
+//
+// The chunked save (begin → write* → commit) is the single most data-critical
+// path in the shell: a bug here can truncate or corrupt the user's real file.
+// These exercise the real filesystem behaviour (not mocks) of the extracted
+// `*_impl` helpers, with emphasis on the safety invariant: the real file is
+// only touched by the final atomic rename, so an aborted save never damages it.
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static TEST_SEQ: AtomicU32 = AtomicU32::new(0);
+
+    /// Unique temp dir per test; removed on drop. Keeps the temp file and the
+    /// real file as siblings on one filesystem (mirrors production layout).
+    struct TestDir(PathBuf);
+    impl TestDir {
+        fn new() -> Self {
+            let n = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir()
+                .join(format!("casualoffice-save-test-{}-{}", std::process::id(), n));
+            std::fs::create_dir_all(&dir).unwrap();
+            TestDir(dir)
+        }
+        /// Path string for a file inside this dir.
+        fn file(&self, name: &str) -> String {
+            self.0.join(name).to_string_lossy().into_owned()
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn temp_path_is_a_sibling_with_expected_suffix() {
+        // EXDEV avoidance: the temp must share the real file's parent dir so
+        // the final rename stays on one filesystem.
+        let tmp = save_temp_path("/home/user/Reports/q3.xlsx");
+        assert_eq!(tmp, PathBuf::from("/home/user/Reports/q3.xlsx.casualoffice.tmp"));
+        assert_eq!(tmp.parent(), PathBuf::from("/home/user/Reports/q3.xlsx").parent());
+    }
+
+    #[test]
+    fn full_cycle_writes_exact_bytes_and_removes_temp() {
+        let dir = TestDir::new();
+        let path = dir.file("out.bin");
+        let state = SaveState::default();
+        let data = b"hello atomic save".to_vec();
+
+        begin_save_impl(&state, path.clone()).unwrap();
+        write_save_chunk_impl(&state, path.clone(), 0, data.clone()).unwrap();
+        commit_save_impl(&state, path.clone()).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), data);
+        // Temp is consumed by the rename, and the state entry is cleared.
+        assert!(!save_temp_path(&path).exists(), "temp should be gone after commit");
+        assert!(state.in_progress.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn abort_without_commit_leaves_real_file_untouched() {
+        // THE safety invariant: a save that begins + writes but never commits
+        // must not modify (or create) the real file. Only the temp is dirtied.
+        let dir = TestDir::new();
+        let path = dir.file("precious.docx");
+        std::fs::write(&path, b"ORIGINAL CONTENT").unwrap();
+        let state = SaveState::default();
+
+        begin_save_impl(&state, path.clone()).unwrap();
+        write_save_chunk_impl(&state, path.clone(), 0, b"new junk that never commits".to_vec())
+            .unwrap();
+        // ...crash/abort here — no commit.
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ORIGINAL CONTENT",
+            "real file must be untouched until commit"
+        );
+        assert!(save_temp_path(&path).exists(), "temp holds the uncommitted bytes");
+    }
+
+    #[test]
+    fn commit_replaces_existing_file_atomically() {
+        let dir = TestDir::new();
+        let path = dir.file("doc.xlsx");
+        std::fs::write(&path, b"v1 old bytes").unwrap();
+        let state = SaveState::default();
+        let v2 = b"v2 brand new bytes, longer than v1".to_vec();
+
+        begin_save_impl(&state, path.clone()).unwrap();
+        write_save_chunk_impl(&state, path.clone(), 0, v2.clone()).unwrap();
+        commit_save_impl(&state, path.clone()).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), v2);
+    }
+
+    #[test]
+    fn out_of_order_chunks_assemble_by_offset() {
+        // Chunks may arrive in any order; offset positioning must reassemble
+        // the byte stream correctly.
+        let dir = TestDir::new();
+        let path = dir.file("chunked.bin");
+        let state = SaveState::default();
+
+        begin_save_impl(&state, path.clone()).unwrap();
+        // Write the second half first, then the first half.
+        write_save_chunk_impl(&state, path.clone(), 5, b"world".to_vec()).unwrap();
+        write_save_chunk_impl(&state, path.clone(), 0, b"hello".to_vec()).unwrap();
+        commit_save_impl(&state, path.clone()).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"helloworld");
+    }
+
+    #[test]
+    fn commit_falls_back_to_deterministic_temp_when_state_lost() {
+        // write/commit derive the temp path deterministically when the in-memory
+        // map entry is missing (e.g. state dropped mid-save), so a save can still
+        // finalize rather than silently failing.
+        let dir = TestDir::new();
+        let path = dir.file("resilient.bin");
+        let state = SaveState::default();
+
+        begin_save_impl(&state, path.clone()).unwrap();
+        write_save_chunk_impl(&state, path.clone(), 0, b"survives state loss".to_vec()).unwrap();
+        // Simulate lost tracking state: clear the map before commit.
+        state.in_progress.lock().unwrap().clear();
+        commit_save_impl(&state, path.clone()).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"survives state loss");
+        assert!(!save_temp_path(&path).exists());
+    }
 }
