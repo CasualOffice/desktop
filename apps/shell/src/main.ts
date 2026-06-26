@@ -1598,10 +1598,16 @@ async function maybeShowWhatsNew() {
     return;
   }
 
-  // Pick the changelog entry that matches the new version. If there's no
-  // explicit entry, show the most recent one (covers minor bumps that
-  // don't need their own block).
-  const entry = CHANGELOG.find((c) => c.version === appVersion) ?? CHANGELOG[0];
+  // Only show a changelog block that matches this exact version. The previous
+  // `?? CHANGELOG[0]` fallback surfaced another version's entry mislabeled as
+  // the current one (e.g. the 0.0.0 "Welcome" block shown as 0.0.1) on any
+  // version without its own block. When there's no matching entry, record the
+  // version as seen and skip until a real entry is added for it.
+  const entry = CHANGELOG.find((c) => c.version === appVersion);
+  if (!entry) {
+    await markVersionSeen(appVersion);
+    return;
+  }
   showWhatsNew(entry, appVersion);
 }
 
