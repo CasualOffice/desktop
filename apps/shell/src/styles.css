@@ -20,6 +20,7 @@
   --accent: #2563eb;
   --accent-fg: #ffffff;
   --danger: #dc2626;
+  --danger-fg: #ffffff;
   --docx: #2563eb;
   --sheets: #1e7a4f;
 
@@ -43,6 +44,16 @@
   --tile-hover: rgba(255, 255, 255, 0.09);
   --shadow-1: 0 1px 2px rgba(0,0,0,0.4);
   --shadow-2: 0 8px 28px rgba(0,0,0,0.45);
+
+  /* WCAG AA on near-black. The light-mode accent (#2563eb) only hits 3.66:1
+     as link / outline text on --bg — below the 4.5:1 floor. Brighten it (6.9:1)
+     and flip its foreground to a dark navy so accent FILLS keep ~6.8:1 text.
+     Danger gets the same treatment: #dc2626-as-text is 3.91:1, so dark mode
+     uses a brighter red (6.8:1) with a dark foreground for danger fills. */
+  --accent: #5c9dff;
+  --accent-fg: #06142b;
+  --danger: #f87171;
+  --danger-fg: #3a0a0a;
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='system'] {
@@ -115,7 +126,7 @@ button.link {
 }
 button.danger {
   background: var(--danger);
-  color: #fff;
+  color: var(--danger-fg);
   border-color: transparent;
 }
 button.icon-btn {
@@ -357,7 +368,7 @@ input[type='text']:focus { border-color: var(--accent); box-shadow: 0 0 0 3px co
   width: 26px; height: 26px;
   border-radius: 50%;
   background: var(--accent);
-  color: white;
+  color: var(--accent-fg);
   font-size: 10.5px;
   font-weight: 600;
 }
@@ -995,8 +1006,8 @@ em.muted { color: var(--muted); font-style: normal; font-size: 11px; }
   gap: 8px;
   animation: toast-in 200ms ease both;
 }
-.toast.success { background: #16a34a; color: #fff; }
-.toast.error { background: var(--danger); color: #fff; }
+.toast.success { background: #15803d; color: #fff; }
+.toast.error { background: var(--danger); color: var(--danger-fg); }
 .toast.leaving { animation: toast-out 180ms ease both; }
 .toast-text { flex: 1; }
 .toast-action {
