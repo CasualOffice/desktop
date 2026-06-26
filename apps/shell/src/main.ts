@@ -134,6 +134,16 @@ function applyTheme(theme: Settings['theme']) {
   document.documentElement.dataset.theme = theme;
 }
 
+/** True on Linux/WebKitGTK, where the "hide window from screenshots" content-
+ *  protection path is a no-op (no compositor API). Android also reports Linux
+ *  in the UA, so exclude it. Used to disable the privacy toggle there rather
+ *  than letting the user flip a switch that protects nothing on their OS. */
+function isLinuxDesktop(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  return /Linux/.test(ua) && !/Android/.test(ua);
+}
+
 /** Push the new theme mode to every already-open document window so their
  *  editors switch live. Fire-and-forget; the launcher itself re-themes via
  *  the local applyTheme call. */
@@ -1695,7 +1705,11 @@ function populateSettings() {
   $<HTMLInputElement>('settings-email').value = state.profile.email ?? '';
   $<HTMLInputElement>('settings-tz').value = state.profile.timezone ?? detectTimezone();
   $<HTMLInputElement>('settings-dir').value = state.settings.default_save_dir ?? '';
-  $<HTMLInputElement>('settings-privacy').checked = state.settings.privacy_mode === true;
+  const privacyEl = $<HTMLInputElement>('settings-privacy');
+  privacyEl.checked = state.settings.privacy_mode === true;
+  // Disable where the underlying content-protection call is a no-op (Linux), so
+  // the control's enabled state reflects whether it actually does anything.
+  privacyEl.disabled = isLinuxDesktop();
   // Behavior: open-where preference (defaults to "ask") and the unsaved-close
   // warning (defaults to true when absent).
   const openPref = state.settings.open_window_preference ?? 'ask';
