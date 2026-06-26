@@ -511,6 +511,26 @@ function doOpen(kind: DocKind, filePath: string | null, where: 'same' | 'new') {
     });
 }
 
+/**
+ * Open every supported file from a drag-drop. A multi-file drop is inherently
+ * multi-window — opening "in this window" would have each navigation clobber
+ * the previous, so >1 file forces a new window per document regardless of the
+ * open-where preference. A single file honors the user's preference.
+ * Unsupported paths are ignored.
+ */
+function handleDrop(paths: string[]) {
+  const supported: Array<{ kind: DocKind; path: string }> = [];
+  for (const p of paths) {
+    const kind = kindFromPath(p);
+    if (kind) supported.push({ kind, path: p });
+  }
+  if (supported.length > 1) {
+    for (const { kind, path } of supported) doOpen(kind, path, 'new');
+  } else if (supported.length === 1) {
+    openOrReplaceLauncher(supported[0].kind, supported[0].path);
+  }
+}
+
 function askOpenChoice(kind: DocKind, filePath: string | null) {
   const modal = $('open-choice');
   const remember = $<HTMLInputElement>('open-choice-remember');
@@ -1124,6 +1144,13 @@ async function bindDragDrop() {
     }
   };
 
+  // Test hook (dev builds only): Tauri's drag-drop event bus isn't available in
+  // the Playwright harness, so expose the handler to drive it synthetically.
+  if (import.meta.env.DEV) {
+    (window as unknown as { __deskApp_handleDrop?: (paths: string[]) => void }).__deskApp_handleDrop =
+      handleDrop;
+  }
+
   try {
     await getCurrentWindow().onDragDropEvent(({ payload }) => {
       const t = (payload as { type?: string }).type;
@@ -1142,10 +1169,7 @@ async function bindDragDrop() {
         hideOverlay();
       } else if (t === 'drop') {
         hideOverlay();
-        for (const p of paths) {
-          const kind = kindFromPath(p);
-          if (kind) openOrReplaceLauncher(kind, p);
-        }
+        handleDrop(paths);
       }
     });
   } catch (err) {

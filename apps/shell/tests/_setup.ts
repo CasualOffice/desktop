@@ -63,6 +63,10 @@ export async function mockTauri(page: Page, state: Partial<MockState> = {}) {
     const tauri = ((window as any).__TAURI__ = {
       core: {
         async invoke(cmd: string, args: Record<string, unknown> = {}) {
+          // Record every invoke so tests can assert on dispatched commands
+          // (e.g. one open_document_window per file in a multi-file drop).
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ((window as any).__deskApp_invokeLog ||= []).push({ cmd, args });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const s = (window as any).__deskApp_mock_state as MockState;
           switch (cmd) {
