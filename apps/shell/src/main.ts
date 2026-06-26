@@ -1480,7 +1480,11 @@ async function finishWizard() {
       avatar_path: null,
       created_at: 0,
     };
+    // Preserve any other persisted prefs (privacy_mode, warn_on_unsaved_close,
+    // open_window_preference, last_seen_version) — save_settings writes the
+    // object verbatim, so a partial object would let serde defaults wipe them.
     const settings: Settings = {
+      ...state.settings,
       theme: wiz.theme,
       default_save_dir: wiz.dir,
     };
@@ -1541,7 +1545,10 @@ async function skipWizard() {
     avatar_path: null,
     created_at: 0,
   };
-  const settings: Settings = { theme: 'system', default_save_dir: null };
+  // Skipping resets theme/folder to defaults but must keep other persisted
+  // prefs (privacy_mode, warn_on_unsaved_close, open_window_preference) — the
+  // saved object is written verbatim, so spread the current settings first.
+  const settings: Settings = { ...state.settings, theme: 'system', default_save_dir: null };
   try {
     state.profile = await invoke<Profile>('save_profile', { profile });
     state.settings = await invoke<Settings>('save_settings', { settings });
@@ -1998,6 +2005,14 @@ async function boot() {
   syncThemeCardAria();
   // Drag-drop binding is fire-and-forget; failures shouldn't block boot.
   bindDragDrop();
+
+  // Clear this window's unsaved-changes flag on every launcher (home) load.
+  // In same-window open mode the launcher window navigates into an editor that
+  // marks it dirty; navigating back home reloads this bundle but the native
+  // close-guard's dirty flag for "main" would otherwise persist, popping a
+  // false "unsaved changes" prompt over a home screen with nothing to save.
+  // Best-effort; a no-op outside the shell.
+  void invoke('set_window_dirty', { dirty: false }).catch(() => undefined);
 
   // Each IPC call gets a short timeout fallback so a single broken Tauri
   // command can't strand the user on a blank screen.
