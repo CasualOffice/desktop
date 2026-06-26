@@ -534,6 +534,18 @@ fn attach_unsaved_guard(app: &AppHandle, window: &tauri::WebviewWindow) {
                     .remove(&label);
                 return;
             }
+            // Respect the user's "warn before closing with unsaved changes"
+            // preference. When it's off, a dirty window closes without the
+            // prompt — otherwise the toggle in Settings does nothing.
+            if !get_settings(handle.clone()).warn_on_unsaved_close {
+                handle
+                    .state::<DirtyState>()
+                    .flags
+                    .lock()
+                    .unwrap()
+                    .remove(&label);
+                return;
+            }
             // Dirty: hold the close and ask. blocking_show must not run on
             // the main/UI thread, so confirm on a worker thread and destroy
             // the window from there if the user agrees.
@@ -1288,6 +1300,15 @@ pub fn run() {
             app.manage(SaveState::default());
             app.manage(DirtyState::default());
             app.manage(WatchState::default());
+
+            // Guard the launcher window too. In same-window open mode the
+            // launcher ("main") navigates in-place into the editor, so without
+            // this a dirty document opened "in this window" would close with no
+            // prompt. The guard only intercepts when the window is dirty, so a
+            // clean home screen (dirty=false) still closes normally.
+            if let Some(main) = app.get_webview_window("main") {
+                attach_unsaved_guard(&app.handle(), &main);
+            }
             // (Earlier prototype attached a native menu bar via
             // tauri::menu::Menu. Removed — visual treatment didn't fit
             // the launcher's home-screen layout. Keyboard shortcuts that
