@@ -1700,6 +1700,10 @@ function hideSettings() {
   $('home-panel').hidden = false;
   $('user-chip').setAttribute('aria-pressed', 'false');
   $('settings-error').textContent = '';
+  // Revert any unsaved live theme preview to the stored theme. After a
+  // successful Save, state.settings.theme already holds the new value so this
+  // is a harmless re-apply; after a cancel/Escape it undoes the preview.
+  applyTheme(state.settings.theme);
   window.removeEventListener('keydown', settingsEscape);
 }
 
@@ -1744,6 +1748,18 @@ function populateSettings() {
 function bindSettings() {
   $('user-chip').addEventListener('click', showSettings);
   $('settings-close').addEventListener('click', hideSettings);
+
+  // Live theme preview: selecting a theme in Settings applies it to the
+  // launcher immediately (matching the first-run wizard), so the choice is
+  // visible before Save. Save persists + broadcasts to open editor windows;
+  // closing without saving reverts to the stored theme (see hideSettings).
+  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-theme]')) {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      applyTheme(radio.value as Settings['theme']);
+      syncThemeCardAria();
+    });
+  }
 
   // Inline, non-blocking validation on blur for the optional email and the
   // timezone field (mirrors the wizard).
