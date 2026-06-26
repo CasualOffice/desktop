@@ -31,7 +31,13 @@
   --radius-lg: 18px;
 }
 
-:root[data-theme='dark'] {
+/* Dark theme and system-auto share the same token values. CSS cannot group
+   a plain selector with a @media block in one rule, so we flip the logic:
+   both selectors receive dark values here, then a light-preference media
+   query restores the light values for system-auto only. This eliminates
+   the previously duplicated dark-value block. */
+:root[data-theme='dark'],
+:root[data-theme='system'] {
   --bg: #0f1115;
   --surface: #15171c;
   --surface-2: #181a20;
@@ -44,19 +50,19 @@
   --shadow-1: 0 1px 2px rgba(0,0,0,0.4);
   --shadow-2: 0 8px 28px rgba(0,0,0,0.45);
 }
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root[data-theme='system'] {
-    --bg: #0f1115;
-    --surface: #15171c;
-    --surface-2: #181a20;
-    --fg: #ecedf1;
-    --muted: rgba(255, 255, 255, 0.68);
-    --subtle: rgba(255, 255, 255, 0.04);
-    --line: rgba(255, 255, 255, 0.09);
-    --tile: rgba(255, 255, 255, 0.05);
-    --tile-hover: rgba(255, 255, 255, 0.09);
-    --shadow-1: 0 1px 2px rgba(0,0,0,0.4);
-    --shadow-2: 0 8px 28px rgba(0,0,0,0.45);
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-2: #fafbfc;
+    --fg: #1c1c1e;
+    --muted: rgba(0, 0, 0, 0.66);
+    --subtle: rgba(0, 0, 0, 0.04);
+    --line: rgba(0, 0, 0, 0.08);
+    --tile: rgba(0, 0, 0, 0.035);
+    --tile-hover: rgba(0, 0, 0, 0.07);
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.04), 0 1px 1px rgba(0,0,0,0.02);
+    --shadow-2: 0 6px 24px rgba(0,0,0,0.06), 0 2px 6px rgba(0,0,0,0.04);
   }
 }
 
