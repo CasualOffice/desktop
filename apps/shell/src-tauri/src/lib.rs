@@ -1157,8 +1157,22 @@ fn write_window_pdf(window: &tauri::WebviewWindow, path: &str) -> Result<(), Str
                 settings.set("output-uri", Some(format!("file://{out_path}").as_str()));
                 settings.set("output-file-format", Some("pdf"));
                 print_op.set_print_settings(&settings);
+                // print() runs the operation on the GTK main loop and writes the
+                // PDF asynchronously. The old code sent Ok() right after calling
+                // it, so the command returned before the file was written and
+                // export "did nothing". Wait for the finished/failed signal.
+                let tx_done = tx.clone();
+                print_op.connect_finished(move |_op| {
+                    let _ = tx_done.send(Ok(()));
+                });
+                let tx_fail = tx;
+                print_op.connect_failed(move |_op, err| {
+                    let _ = tx_fail.send(Err(format!("print-to-pdf failed: {err}")));
+                });
                 print_op.print();
-                let _ = tx.send(Ok(()));
+                // Keep the operation alive past this closure so its async signals
+                // can still fire while GTK runs the print on the main loop.
+                std::mem::forget(print_op);
             })
             .map_err(|e| format!("could not access webview: {e}"))?;
         return rx
