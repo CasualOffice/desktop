@@ -1647,6 +1647,24 @@ fn open_file_path(app: &AppHandle, path: String) {
     }
 }
 
+/// Open an external web link in the user's default browser. Editors call this
+/// instead of `window.open()` (which silently no-ops inside the Tauri webview)
+/// for Help, "Report a bug", and document hyperlinks. Scheme-guarded to
+/// http(s)/mailto so a malicious document hyperlink can't launch arbitrary
+/// programs via a `file:`/custom-scheme URL.
+#[tauri::command]
+fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:"))
+    {
+        return Err(format!("refusing to open non-web URL: {url}"));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_app_version(app: AppHandle) -> String {
     // Single source of truth = the version Tauri baked in from tauri.conf.json
@@ -1683,6 +1701,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let initial = load_recents(&app.handle());
             app.manage(RecentsState {
@@ -1752,6 +1771,7 @@ pub fn run() {
             set_window_dirty,
             has_unsaved_documents,
             is_update_supported,
+            open_external,
             pick_open_document,
             pick_save_path,
             export_pdf,

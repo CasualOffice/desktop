@@ -21,6 +21,7 @@ tauri-plugin-single-instance = "2"
 # latest.json); plugin-process supplies the relaunch after an update installs.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Filesystem watcher for external-change detection on open documents
