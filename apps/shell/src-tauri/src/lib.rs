@@ -864,25 +864,67 @@ async fn export_pdf(
 }
 
 /// Render `window`'s webview to a PDF file at `path` using the platform's
-/// native webview print-to-PDF. Linux/WebKitGTK is implemented (the shipped
-/// target); macOS/Windows arms are stubbed until those builds exist.
+/// native webview print-to-PDF. macOS uses WKWebView.createPDF (selectable
+/// text); other platforms are stubbed until their builds exist.
 fn write_window_pdf(window: &tauri::WebviewWindow, path: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use block2::RcBlock;
+        use objc2_foundation::{NSData, NSError};
+        use objc2_web_kit::WKWebView;
+
+        let out_path = path.to_string();
+        // WKWebView.createPDF is async (completion handler), so collect the
+        // result over a channel and wait on it from this command's thread.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
+        window
+            .with_webview(move |webview| {
+                // On macOS `inner()` is a pointer to the wry WKWebView subclass.
+                let wk: &WKWebView = unsafe { &*(webview.inner() as *const WKWebView) };
+                let handler = RcBlock::new(move |data: *mut NSData, err: *mut NSError| {
+                    if !err.is_null() {
+                        let msg = unsafe { (*err).localizedDescription() };
+                        let _ = tx.send(Err(format!("createPDF failed: {msg}")));
+                        return;
+                    }
+                    if data.is_null() {
+                        let _ = tx.send(Err("createPDF returned no data".to_string()));
+                        return;
+                    }
+                    let bytes = unsafe { (*data).to_vec() };
+                    let _ = tx.send(Ok(bytes));
+                });
+                // nil configuration → the full currently-displayed web page.
+                unsafe { wk.createPDFWithConfiguration_completionHandler(None, &handler) };
+            })
+            .map_err(|e| format!("could not access webview: {e}"))?;
+        let bytes = rx
+            .recv_timeout(Duration::from_secs(60))
+            .map_err(|_| "PDF export timed out".to_string())??;
+        if bytes.is_empty() {
+            return Err("the webview produced an empty PDF".to_string());
+        }
+        std::fs::write(&out_path, bytes).map_err(|e| format!("write pdf: {e}"))?;
+        return Ok(());
+    }
+    // NOTE: the Linux + Windows arms below cannot be compiled on the macOS dev
+    // box (their crates are target-gated and not even fetched here); they are
+    // written against the documented APIs and compiled on the Linux/Windows CI,
+    // then GUI-verified there. The macOS arm above is compiled + verified here.
     #[cfg(target_os = "linux")]
     {
         use webkit2gtk::PrintOperationExt;
-        let path = path.to_string();
+        let out_path = path.to_string();
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
         window
             .with_webview(move |webview| {
                 // On Linux `inner()` is the wry-owned `webkit2gtk::WebView`.
                 let wv = webview.inner();
                 let print_op = webkit2gtk::PrintOperation::new(&wv);
-                // Headless export: write straight to a PDF file, no dialog.
                 let settings = gtk::PrintSettings::new();
-                settings.set("output-uri", Some(format!("file://{path}").as_str()));
+                settings.set("output-uri", Some(format!("file://{out_path}").as_str()));
                 settings.set("output-file-format", Some("pdf"));
                 print_op.set_print_settings(&settings);
-                // Synchronous print to the configured file output.
                 print_op.print();
                 let _ = tx.send(Ok(()));
             })
@@ -891,7 +933,46 @@ fn write_window_pdf(window: &tauri::WebviewWindow, path: &str) -> Result<(), Str
             .recv_timeout(Duration::from_secs(60))
             .map_err(|_| "PDF export timed out".to_string())?;
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
+        use webview2_com::PrintToPdfCompletedHandler;
+        use windows::core::{Interface, HSTRING};
+        let out_path = path.to_string();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        window
+            .with_webview(move |webview| {
+                let res = (|| -> Result<(), String> {
+                    // On Windows `controller()` is the ICoreWebView2Controller.
+                    let core = unsafe { webview.controller().CoreWebView2() }
+                        .map_err(|e| e.to_string())?;
+                    let core7: ICoreWebView2_7 = core.cast().map_err(|e| e.to_string())?;
+                    let tx2 = tx.clone();
+                    let handler = PrintToPdfCompletedHandler::create(Box::new(
+                        move |hr, success| {
+                            let _ = tx2.send(if hr.is_err() {
+                                Err(format!("PrintToPdf failed: {hr:?}"))
+                            } else if !success.as_bool() {
+                                Err("PrintToPdf reported failure".to_string())
+                            } else {
+                                Ok(())
+                            });
+                            Ok(())
+                        },
+                    ));
+                    unsafe { core7.PrintToPdf(&HSTRING::from(&out_path), None, &handler) }
+                        .map_err(|e| e.to_string())
+                })();
+                if let Err(e) = res {
+                    let _ = tx.send(Err(e));
+                }
+            })
+            .map_err(|e| format!("could not access webview: {e}"))?;
+        return rx
+            .recv_timeout(Duration::from_secs(60))
+            .map_err(|_| "PDF export timed out".to_string())?;
+    }
+    #[allow(unreachable_code)]
     {
         let _ = (window, path);
         Err("PDF export isn't available on this platform build yet.".to_string())
