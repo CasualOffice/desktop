@@ -37,12 +37,30 @@ jobs:
 
       - name: Resolve release tag
         id: tag
+        # inputs.tag is passed via env, never interpolated into the script, so a
+        # crafted dispatch value can't inject shell into a token-bearing job.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
           else
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify version matches tag
+        # See release-linux.yml — a tag whose version drifts from
+        # tauri.conf.json makes the updater re-install the same build forever.
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          BASE="${TAG#v}"; BASE="${BASE%%-*}"
+          CONF=$(jq -r .version apps/shell/src-tauri/tauri.conf.json)
+          if [ "$BASE" != "$CONF" ]; then
+            echo "ERROR: tag $TAG (base $BASE) != tauri.conf.json version $CONF." >&2
+            exit 1
+          fi
+          echo "OK: tag base $BASE matches tauri.conf.json $CONF"
 
       - name: Rewrite submodule SSH URLs to HTTPS
         # The editor repos pin their submodules (univer-revamp,
@@ -210,7 +228,10 @@ jobs:
           # `releases/latest/download/` alias the updater queries skips them and
           # production installs aren't pushed an unvalidated build.
           prerelease: ${{ contains(steps.tag.outputs.name, '-') }}
-          generate_release_notes: true
+          # Don't regenerate notes here — release-linux.yml owns the release
+          # body; regenerating would clobber its install instructions
+          # (last-writer-wins across the parallel platform jobs).
+          generate_release_notes: false
           files: |
             release-artifacts/*.dmg
             release-artifacts/*.app.tar.gz

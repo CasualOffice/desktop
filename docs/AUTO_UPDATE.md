@@ -60,16 +60,29 @@ and ship a release. Don't rotate casually.
 
 ## Release checklist
 
-1. Bump the app version in `apps/shell/src-tauri/tauri.conf.json`.
+1. Bump the app version in **all** version files so the binary, the JS layer,
+   and the updater manifest agree (a mismatch makes the updater re-install the
+   same build forever — `release-*.yml`'s "Verify version matches tag" step
+   fails the release if `tauri.conf.json` doesn't match the tag):
+   - `apps/shell/src-tauri/tauri.conf.json`
+   - `apps/shell/src-tauri/Cargo.toml` (run `cargo check` to refresh `Cargo.lock`)
+   - `package.json`, `apps/shell/package.json`, `packages/casual-office-ui/package.json`
 2. Ensure the `TAURI_SIGNING_PRIVATE_KEY` repo secret is set.
 3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 4. The three `release-*.yml` workflows build, sign, and upload to one GitHub
    Release: installers (`.dmg` / `.deb` / `.AppImage` / `.msi` / `.exe`), the
-   updater artifacts + `.sig`, and the per-target `.json` manifests.
+   updater artifacts + `.sig`, and the per-target `.json` manifests. A hyphenated
+   tag (e.g. `vX.Y.Z-rc1`) is published as a pre-release, so the
+   `releases/latest/download/` alias the updater queries skips it.
 5. Installed apps on the previous version see the update on next launch.
 
 **Validate first.** The release pipeline only runs on a tag and can't be
 exercised by normal CI. Push a pre-release tag (e.g. `vX.Y.Z-rc1`) and confirm
 all three jobs upload their bundle + `.sig` + manifest before tagging the real
-release. (There are no auto-update-capable installs before 0.0.2, so an RC that
-briefly becomes "latest" harms nothing.)
+release. Because hyphenated tags are marked pre-release, an RC never becomes the
+`latest` the updater serves.
+
+> **Windows note:** the Windows release builds the editor bundles on an Ubuntu
+> job and downloads them for the native build, because the vendored Univer fork
+> doesn't compile on Windows (`ERR_UNSUPPORTED_ESM_URL_SCHEME`). See
+> `release-windows.yml`.
