@@ -970,7 +970,21 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
     if (e.key === 'Escape') {
       e.preventDefault();
       closeAnyContextMenu();
+      return;
     }
+    // Up/Down (and Home/End) move focus between items, per the role="menu"
+    // pattern; otherwise the declared role implies keyboard nav it doesn't have.
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('.context-menu-item'));
+    if (items.length === 0) return;
+    e.preventDefault();
+    const cur = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = items.length - 1;
+    else if (e.key === 'ArrowDown') next = cur < 0 ? 0 : (cur + 1) % items.length;
+    else next = cur < 0 ? items.length - 1 : (cur - 1 + items.length) % items.length;
+    items[next].focus();
   };
   // Escape can attach immediately — the opening event is a mouse event, not a
   // keydown, so there's no self-close race. Only the mousedown `dismiss` must
@@ -1123,19 +1137,39 @@ function bindHomePanel() {
   });
 
   // Type-filter buttons (All / Documents / Spreadsheets). These are
-  // role="tab" — keep aria-selected in sync with the active class.
-  for (const btn of document.querySelectorAll<HTMLButtonElement>('.filter-btn')) {
-    btn.addEventListener('click', () => {
-      for (const other of document.querySelectorAll<HTMLButtonElement>('.filter-btn')) {
-        other.classList.remove('active');
-        other.setAttribute('aria-selected', 'false');
-      }
-      btn.classList.add('active');
-      btn.setAttribute('aria-selected', 'true');
-      recentTypeFilter = (btn.dataset.filter as typeof recentTypeFilter) ?? 'all';
-      renderRecents();
+  // role="tab" in a role="tablist": keep aria-selected in sync, use a roving
+  // tabindex (only the active tab is Tab-reachable), and support the WAI-ARIA
+  // arrow-key navigation the roles imply.
+  const filterBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('.filter-btn'));
+  const activateFilter = (btn: HTMLButtonElement) => {
+    for (const other of filterBtns) {
+      other.classList.remove('active');
+      other.setAttribute('aria-selected', 'false');
+      other.tabIndex = -1;
+    }
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+    btn.tabIndex = 0;
+    recentTypeFilter = (btn.dataset.filter as typeof recentTypeFilter) ?? 'all';
+    renderRecents();
+  };
+  filterBtns.forEach((btn, i) => {
+    btn.tabIndex = btn.classList.contains('active') ? 0 : -1;
+    btn.addEventListener('click', () => activateFilter(btn));
+    btn.addEventListener('keydown', (e) => {
+      let next = -1;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % filterBtns.length;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp')
+        next = (i - 1 + filterBtns.length) % filterBtns.length;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = filterBtns.length - 1;
+      else return;
+      e.preventDefault();
+      const target = filterBtns[next];
+      activateFilter(target);
+      target.focus();
     });
-  }
+  });
 }
 
 // =============================================================================
