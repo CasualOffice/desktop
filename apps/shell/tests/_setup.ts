@@ -33,6 +33,7 @@ export interface MockState {
     last_opened: number;
     pinned: boolean;
   }>;
+  recoveries?: Array<{ path: string; recovery_path: string; saved_at: number }>;
   app_version: string;
 }
 
@@ -52,6 +53,7 @@ export const defaultState: MockState = {
     last_seen_version: '0.0.0',
   },
   recents: [],
+  recoveries: [],
   app_version: '0.0.0',
 };
 
@@ -117,6 +119,15 @@ export async function mockTauri(page: Page, state: Partial<MockState> = {}) {
               return;
             case 'get_app_version':
               return s.app_version;
+            case 'pending_recoveries':
+              return s.recoveries ?? [];
+            case 'write_recovery':
+              return undefined;
+            case 'read_recovery':
+              return null;
+            case 'clear_recovery':
+              s.recoveries = (s.recoveries ?? []).filter((r) => r.path !== args.path);
+              return undefined;
             default:
               throw new Error(`mock: unhandled command ${cmd}`);
           }

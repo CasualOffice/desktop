@@ -2111,9 +2111,45 @@ async function boot() {
   hideBootSkeleton();
   if (profile) {
     revealWorkspace();
+    void maybeOfferRecovery();
   } else {
     $('wizard').hidden = false;
     showWizardStep(1);
+  }
+}
+
+interface RecoveryEntry {
+  path: string;
+  recovery_path: string;
+  saved_at: number;
+}
+
+/** On relaunch, surface any crash-recovery sidecars the editor left behind
+ *  (orphaned = the app didn't exit cleanly). Offer to reopen the file and
+ *  restore its unsaved changes; declining discards the sidecar. */
+async function maybeOfferRecovery() {
+  const pending = await withTimeout(
+    invoke<RecoveryEntry[]>('pending_recoveries'),
+    2000,
+    [] as RecoveryEntry[],
+  );
+  for (const entry of pending) {
+    const kind = kindFromPath(entry.path);
+    if (!kind) continue;
+    const name = entry.path.split(/[\\/]/).pop() || entry.path;
+    const ok = await confirmDialog({
+      title: 'Recover unsaved changes?',
+      body: `“${name}” has unsaved changes from a session that didn't close normally. Reopen it and restore them?`,
+      confirmLabel: 'Recover',
+      cancelLabel: 'Discard',
+    });
+    if (ok) {
+      // Reopen the file; the editor checks for the sidecar on load and applies
+      // it. Remaining recoveries persist and are offered again next launch.
+      openOrReplaceLauncher(kind, entry.path);
+      break;
+    }
+    void invoke('clear_recovery', { path: entry.path }).catch(() => undefined);
   }
 }
 
