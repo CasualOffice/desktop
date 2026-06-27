@@ -1,0 +1,460 @@
+name: Release
+
+# One consolidated release pipeline for all three platforms.
+#
+#   editors   (Ubuntu)  — build the docx + sheets web bundles once, upload them.
+#   linux     (Ubuntu)  ┐
+#   macos     (macOS)   ├ download the bundle, build + sign ONLY the native
+#   windows   (Windows) ┘ Tauri shell, upload installers + signed updater
+#                         artifact + per-target manifest as a job artifact.
+#   finalize  (Ubuntu)  — once all three succeed, publish ONE GitHub Release
+#                         with every artifact at once.
+#
+# Why this shape (replaces the old per-platform release-*.yml files):
+#   - H3: the editor builds run `pnpm/bun install` over the external docx/sheets
+#     repos (arbitrary lifecycle scripts). Those run in `editors`, which never
+#     sees the signing key. The native jobs that DO hold the key only build the
+#     first-party Rust shell — no external editor installs beside the secret.
+#   - M1: the release is created by a single `finalize` job after all platforms
+#     succeed, so there's no partial `latest` with one platform's files (or a
+#     manifest live before its binary uploaded). One job fails -> no release.
+#   - L4: default token is read-only; only `finalize` is granted contents: write.
+#   - Windows builds the Univer fork on Ubuntu (it can't on Windows —
+#     ERR_UNSUPPORTED_ESM_URL_SCHEME), now true for every platform for free.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name for the release (e.g. v0.0.1)'
+        required: true
+        default: 'v0.0.0'
+
+# Read-only by default; only the finalize job that publishes needs write.
+permissions:
+  contents: read
+
+jobs:
+  editors:
+    name: Build editor bundles (Ubuntu)
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.tag.outputs.name }}
+    steps:
+      - name: Checkout deskApp
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        # inputs.tag via env, never interpolated into the script.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify version matches tag
+        # A tag whose version drifts from tauri.conf.json makes the updater
+        # re-install the same build every launch. Strip any prerelease suffix
+        # (v0.0.2-rc1 -> 0.0.2) before comparing.
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          BASE="${TAG#v}"; BASE="${BASE%%-*}"
+          CONF=$(jq -r .version apps/shell/src-tauri/tauri.conf.json)
+          if [ "$BASE" != "$CONF" ]; then
+            echo "ERROR: tag $TAG (base $BASE) != tauri.conf.json version $CONF." >&2
+            echo "Bump the version files before tagging (see docs/AUTO_UPDATE.md)." >&2
+            exit 1
+          fi
+          echo "OK: tag base $BASE matches tauri.conf.json $CONF"
+
+      - name: Setup Node 22
+        # Node 22 is REQUIRED: the vendored Univer fork's engine-render
+        # `prepare` hook runs `node --experimental-strip-types`, which Node 20
+        # rejects during sheets/setup-fork.sh.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack (pnpm per each package's packageManager)
+        run: corepack enable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Clone docx editor (main, with design-system submodule)
+        run: |
+          # docx-editor/styles.css @imports the @schnsrw/design-system tokens
+          # vendored at docx-editor/vendor/design-system (a git submodule whose
+          # .gitmodules URL is SSH) — the CSS build fails with a missing
+          # dist/tokens.css without it. Rewrite SSH->HTTPS so the public
+          # submodule clones without a deploy key, then init it shallowly.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch main \
+            https://github.com/CasualOffice/docs.git docx
+          git -C docx submodule update --init --recursive --depth 1 \
+            docx-editor/vendor/design-system
+          (cd docx/docx-editor && bun install)
+
+      - name: Clone sheets editor (main, with Univer fork submodules)
+        run: |
+          # main resolves @univerjs/* to the vendored Univer fork via pnpm
+          # overrides, so the submodules must be present and the fork built
+          # (setup-fork.sh) before install. .gitmodules uses SSH URLs; rewrite
+          # to HTTPS so the public fork repos clone without a deploy key.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --recurse-submodules --shallow-submodules --branch main \
+            https://github.com/CasualOffice/sheets.git sheets
+          cd sheets
+          ./scripts/setup-fork.sh
+          pnpm install --no-frozen-lockfile
+          pnpm --filter @casualoffice/sheets build
+
+      - name: Build docx editor
+        working-directory: docx/docx-editor/examples/vite
+        run: bun run build
+
+      - name: Build sheets editor
+        working-directory: sheets/apps/web
+        env:
+          # Univer's bundle is large; raise Node's old-space ceiling so the
+          # `vite build` doesn't OOM.
+          NODE_OPTIONS: --max-old-space-size=4096
+        # --base=./ so the bundled /assets paths resolve under the /sheets/ mount.
+        run: pnpm exec vite build --base=./
+
+      - name: Copy editor dists into shell
+        working-directory: apps/shell
+        run: ./scripts/copy-editors.sh
+
+      - name: Verify editor asset paths are relative
+        # Fail the release if an editor shipped absolute /assets/ paths (built
+        # without a relative base) — that produces a blank editor window.
+        run: |
+          fail=0
+          for ed in docx sheets; do
+            if grep -Eq '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html"; then
+              echo "ERROR: $ed editor has absolute asset paths (build with --base=./)" >&2
+              grep -E '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html" >&2
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ] && echo "OK: docx + sheets bundles use relative asset paths."
+          exit $fail
+
+      - name: Upload editor bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-dist
+          path: apps/shell/public
+          retention-days: 1
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux bundles
+    needs: editors
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout deskApp
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/shell/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/shell/src-tauri/Cargo.lock') }}
+
+      - name: Download editor bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-dist
+          path: apps/shell/public
+
+      - name: Install shell deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build shell (vite)
+        working-directory: apps/shell
+        run: pnpm build
+
+      - name: Build Tauri bundles
+        working-directory: apps/shell/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --bundles deb,appimage
+
+      - name: Stage artifacts + update manifest
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.editors.outputs.tag }}"; VER="${TAG#v}"
+          BASE="apps/shell/src-tauri/target/release/bundle"
+          mkdir -p release-artifacts
+          cp "$BASE/deb/"*.deb release-artifacts/
+          cp "$BASE/appimage/"*.AppImage release-artifacts/
+          APPIMAGE=$(ls "$BASE/appimage/"*.AppImage | head -1)
+          NAME=$(basename "$APPIMAGE")
+          SIG=$(cat "$BASE/appimage/"*.AppImage.sig)
+          # GitHub rewrites spaces in asset names to '.', so match that or the
+          # updater 404s (productName "Casual Office" has a space).
+          ASSET="${NAME// /.}"
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
+          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" \
+            '{version:$v, pub_date:$p, platforms: {"linux-x86_64": {signature:$sig, url:$url}}}' \
+            > "release-artifacts/linux-x86_64.json"
+          ls -lh release-artifacts/
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: release-artifacts
+          retention-days: 1
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS bundles
+    needs: editors
+    runs-on: macos-14
+    steps:
+      - name: Checkout deskApp
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Rust (universal apple targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/shell/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/shell/src-tauri/Cargo.lock') }}
+
+      - name: Download editor bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-dist
+          path: apps/shell/public
+
+      - name: Install shell deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build shell (vite)
+        working-directory: apps/shell
+        run: pnpm build
+
+      - name: Build Tauri bundles
+        working-directory: apps/shell/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --target universal-apple-darwin --bundles app,dmg
+
+      - name: Stage artifacts + per-arch update manifests
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.editors.outputs.tag }}"; VER="${TAG#v}"
+          BASE="apps/shell/src-tauri/target/universal-apple-darwin/release/bundle"
+          mkdir -p release-artifacts
+          cp "$BASE/dmg/"*.dmg release-artifacts/
+          TARBALL=$(ls "$BASE/macos/"*.app.tar.gz | head -1)
+          NAME=$(basename "$TARBALL")
+          SIG=$(cat "$BASE/macos/"*.app.tar.gz.sig)
+          cp "$TARBALL" release-artifacts/
+          ASSET="${NAME// /.}"
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
+          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # One universal binary serves both arches — emit a manifest per key.
+          for ARCH in aarch64 x86_64; do
+            jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" --arg key "darwin-$ARCH" \
+              '{version:$v, pub_date:$p, platforms: {($key): {signature:$sig, url:$url}}}' \
+              > "release-artifacts/darwin-$ARCH.json"
+          done
+          ls -lh release-artifacts/
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: release-artifacts
+          retention-days: 1
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows bundles
+    needs: editors
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout deskApp
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Rust (msvc target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/shell/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/shell/src-tauri/Cargo.lock') }}
+
+      - name: Download editor bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-dist
+          path: apps/shell/public
+
+      - name: Install shell deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build shell (vite)
+        working-directory: apps/shell
+        run: pnpm build
+
+      - name: Build Tauri bundles
+        working-directory: apps/shell/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --bundles msi,nsis
+
+      - name: Stage artifacts + update manifest
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.editors.outputs.tag }}"; VER="${TAG#v}"
+          BASE="apps/shell/src-tauri/target/release/bundle"
+          mkdir -p release-artifacts
+          cp "$BASE/msi/"*.msi release-artifacts/ 2>/dev/null || true
+          cp "$BASE/nsis/"*.exe release-artifacts/ 2>/dev/null || true
+          EXE=$(ls "$BASE/nsis/"*-setup.exe | head -1)
+          NAME=$(basename "$EXE")
+          SIG=$(cat "$BASE/nsis/"*-setup.exe.sig)
+          ASSET="${NAME// /.}"
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
+          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" \
+            '{version:$v, pub_date:$p, platforms: {"windows-x86_64": {signature:$sig, url:$url}}}' \
+            > "release-artifacts/windows-x86_64.json"
+          ls -lh release-artifacts/
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: release-artifacts
+          retention-days: 1
+          if-no-files-found: error
+
+  finalize:
+    name: Publish GitHub Release
+    needs: [editors, linux, macos, windows]
+    runs-on: ubuntu-22.04
+    # Only this job touches the release; it's the single point of publication so
+    # the release never exists in a partial (one-platform) state.
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.editors.outputs.tag }}
+          name: ${{ needs.editors.outputs.tag }}
+          draft: false
+          # Hyphenated tags (e.g. v0.0.2-rc1) publish as pre-releases so the
+          # updater's releases/latest/download alias skips them.
+          prerelease: ${{ contains(needs.editors.outputs.tag, '-') }}
+          generate_release_notes: true
+          body: |
+            Casual Office ${{ needs.editors.outputs.tag }}
+
+            Local-only desktop editor for Word (.docx) and Excel (.xlsx) files.
+            Files stay on disk — no sync, no account, no telemetry.
+
+            ## Install
+            - **Linux:** `.AppImage` (auto-updates) or `.deb`
+            - **macOS:** `.dmg` (right-click → Open on first launch — unsigned)
+            - **Windows:** `-setup.exe` (NSIS, auto-updates) or `.msi`
+          files: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.dmg
+            dist/*.app.tar.gz
+            dist/*.msi
+            dist/*.exe
+            dist/*.json
