@@ -1,24 +1,27 @@
 name: Release Windows
 
-# Build .msi (WiX) + .exe (NSIS) on every push of a v* tag and attach
-# them to the same GitHub Release that release-linux.yml writes to.
-# Both workflows target the same tag name; softprops/action-gh-release
-# updates the existing release with additional files rather than
-# overwriting it.
+# Build .msi (WiX) + .exe (NSIS) on every push of a v* tag and attach them
+# to the same GitHub Release that release-linux.yml writes to. softprops
+# updates the existing release with additional files rather than overwriting.
 #
-# Cross-repo wiring matches the Linux workflow: clone the editors at
-# the desk_v0.0.0/* branches, build each, copy dists into
-# apps/shell/public/, then build the Tauri shell.
+# Two jobs:
+#   editors  — runs on Ubuntu, builds the docx + sheets web bundles and
+#              uploads apps/shell/public as an artifact.
+#   windows  — downloads that artifact and builds ONLY the native Tauri shell.
 #
-# NOTE: manual-only for now. The vendored Univer fork's
-# @univerjs/engine-render build fails on Windows with
-# ERR_UNSUPPORTED_ESM_URL_SCHEME (Node's ESM loader rejecting an absolute
-# `D:\...` path passed to `node --experimental-strip-types`). That code is
-# in sheets/vendor/univer-revamp (read-only upstream), so it needs an
-# upstream fix before Windows can build. Until then, tag pushes ship a
-# clean Linux + macOS release instead of a perpetually red Windows job.
-# Re-add the `push: tags: ['v*']` trigger once the fork builds on Windows.
+# Why split: the sheets build compiles the vendored Univer fork
+# (sheets/scripts/setup-fork.sh -> univer-cli build -> tsdown), whose config
+# loader imports an absolute path and dies on Windows with
+# ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received protocol 'd:'") — Node's ESM
+# loader rejects bare drive-letter paths. The editor dist is platform-
+# independent web assets, so building it on Ubuntu (where the fork builds
+# fine, like Linux/macOS) and reusing it on Windows sidesteps the fork build
+# entirely. Windows shipped fine this way at v0.0.0, before the build moved
+# in-job to the fork.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -30,13 +33,104 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  editors:
+    name: Build editor bundles (Ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout deskApp
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        # Node 22 is REQUIRED: the vendored Univer fork's engine-render
+        # `prepare` hook runs `node --experimental-strip-types`, which Node 20
+        # rejects during sheets/setup-fork.sh.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack (pnpm per each package's packageManager)
+        run: corepack enable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Clone docx editor (main, with design-system submodule)
+        run: |
+          # docx-editor/styles.css @imports the @schnsrw/design-system tokens
+          # vendored at docx-editor/vendor/design-system (a git submodule whose
+          # .gitmodules URL is SSH) — the CSS build fails with a missing
+          # dist/tokens.css without it. Rewrite SSH->HTTPS so the public
+          # submodule clones without a deploy key, then init it shallowly.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch main \
+            https://github.com/CasualOffice/docs.git docx
+          git -C docx submodule update --init --recursive --depth 1 \
+            docx-editor/vendor/design-system
+          (cd docx/docx-editor && bun install)
+
+      - name: Clone sheets editor (main, with Univer fork submodules)
+        run: |
+          # main resolves @univerjs/* to the vendored Univer fork via pnpm
+          # overrides, so the submodules must be present and the fork built
+          # (setup-fork.sh) before install. .gitmodules uses SSH URLs; rewrite
+          # to HTTPS so the public fork repos clone without a deploy key.
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --recurse-submodules --shallow-submodules --branch main \
+            https://github.com/CasualOffice/sheets.git sheets
+          cd sheets
+          ./scripts/setup-fork.sh
+          pnpm install --no-frozen-lockfile
+          pnpm --filter @casualoffice/sheets build
+
+      - name: Build docx editor
+        working-directory: docx/docx-editor/examples/vite
+        run: bun run build
+
+      - name: Build sheets editor
+        working-directory: sheets/apps/web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        # --base=./ so the bundled /assets paths resolve under the /sheets/
+        # mount in the Tauri shell.
+        run: pnpm exec vite build --base=./
+
+      - name: Copy editor dists into shell
+        working-directory: apps/shell
+        run: ./scripts/copy-editors.sh
+
+      - name: Verify editor asset paths are relative
+        # Fail the release if an editor shipped absolute /assets/ paths (built
+        # without a relative base) — that produces a blank editor window.
+        run: |
+          fail=0
+          for ed in docx sheets; do
+            if grep -Eq '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html"; then
+              echo "ERROR: $ed editor has absolute asset paths (build with --base=./ / PAGES_BASE=./)" >&2
+              grep -E '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html" >&2
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ] && echo "OK: docx + sheets bundles use relative asset paths."
+          exit $fail
+
+      - name: Upload editor bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-dist
+          path: apps/shell/public
+          retention-days: 1
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows bundles
+    needs: editors
     runs-on: windows-latest
     defaults:
       run:
-        # Bash on Windows runs via Git Bash. Pin it so the editor
-        # build scripts (copy-editors.sh) and pnpm install behave the
-        # same way they do on Linux.
+        # Bash on Windows runs via Git Bash. Pin it so the staging script
+        # and pnpm behave the same way they do on Linux.
         shell: bash
     steps:
       - name: Checkout deskApp
@@ -52,28 +146,16 @@ jobs:
           fi
 
       - name: Setup Node 22
-        # Node 22 is REQUIRED: the vendored Univer fork's engine-render
-        # `prepare` hook runs `node --experimental-strip-types`, which Node 20
-        # rejects during sheets/setup-fork.sh.
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
       - name: Enable corepack (pnpm per each package's packageManager)
-        # corepack resolves the exact pnpm version from each repo's
-        # `packageManager` field — deskApp uses pnpm@9.x, sheets + the Univer
-        # fork use pnpm@10.x.
         run: corepack enable
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Setup Rust (msvc target)
-        # windows-latest already ships with the MSVC build chain.
-        # Tauri produces .msi via WiX and .exe via NSIS, both of
-        # which require the msvc toolchain.
+        # windows-latest ships the MSVC build chain; Tauri produces .msi via
+        # WiX and .exe via NSIS, both of which require it.
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -90,89 +172,27 @@ jobs:
             apps/shell/src-tauri/target
           key: cargo-${{ runner.os }}-${{ hashFiles('apps/shell/src-tauri/Cargo.lock') }}
 
-      - name: Clone docx editor (main, with design-system submodule)
-        run: |
-          # The desktop bridge + offline-first flag now live in main (the old
-          # desk_v0.0.0/bridge-wiring branch was folded in), so build from main.
-          # docx-editor/styles.css @imports the @schnsrw/design-system tokens
-          # vendored at docx-editor/vendor/design-system (a git submodule whose
-          # .gitmodules URL is SSH) — the CSS build fails with a missing
-          # dist/tokens.css without it. Rewrite SSH->HTTPS so the public
-          # submodule clones without a deploy key, then init it shallowly.
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git clone --depth 1 --branch main \
-            https://github.com/CasualOffice/docs.git docx
-          git -C docx submodule update --init --recursive --depth 1 \
-            docx-editor/vendor/design-system
-          (cd docx/docx-editor && bun install)
-
-      - name: Clone sheets editor (main, with Univer fork submodules)
-        run: |
-          # Build from main now — desk_v0.0.0/no-cdn-fonts is superseded. main
-          # resolves @univerjs/* to the vendored Univer fork via pnpm overrides,
-          # so the submodules must be present and the fork built (setup-fork.sh)
-          # before install. .gitmodules uses SSH URLs; rewrite to HTTPS so the
-          # public fork repos clone without a deploy key.
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git clone --depth 1 --recurse-submodules --shallow-submodules --branch main \
-            https://github.com/CasualOffice/sheets.git sheets
-          cd sheets
-          # Build + swap the Univer fork package.jsons to lib/ (matches sheets CI).
-          ./scripts/setup-fork.sh
-          # --no-frozen-lockfile: pnpm v9 forces frozen under CI=true; tolerate
-          # small lockfile drift so a release isn't gated on it.
-          pnpm install --no-frozen-lockfile
-          # apps/web imports the SDK's built dist — build it before the app.
-          pnpm --filter @casualoffice/sheets build
-
-      - name: Build docx editor
-        working-directory: docx/docx-editor/examples/vite
-        run: bun run build
-
-      - name: Build sheets editor
-        working-directory: sheets/apps/web
-        env:
-          # Univer's bundle is large; raise Node's old-space ceiling so the
-          # `vite build` doesn't OOM on memory-constrained runners.
-          NODE_OPTIONS: --max-old-space-size=4096
-        # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
-        # in the Tauri shell. main's `build` script omits --base by design (the
-        # web deploy needs an absolute base for SPA sub-routes), so pass it here.
-        # The "Verify editor asset paths are relative" step below guards this.
-        run: pnpm exec vite build --base=./
+      - name: Download editor bundles
+        # Prebuilt on Ubuntu by the `editors` job — the Windows runner never
+        # builds the Univer fork (see the header note).
+        uses: actions/download-artifact@v4
+        with:
+          name: editor-dist
+          path: apps/shell/public
 
       - name: Install shell deps
         run: pnpm install --no-frozen-lockfile
 
-      - name: Copy editor dists into shell
-        working-directory: apps/shell
-        run: ./scripts/copy-editors.sh
-
-      - name: Verify editor asset paths are relative
-        # Fail the release if an editor shipped absolute /assets/ paths
-        # (built without a relative base) — that produces a blank editor
-        # window under /docx/ or /sheets/.
-        run: |
-          fail=0
-          for ed in docx sheets; do
-            if grep -Eq '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html"; then
-              echo "ERROR: $ed editor has absolute asset paths (build with --base=./ / PAGES_BASE=./)" >&2
-              grep -E '(src|href)="/(assets|favicon)' "apps/shell/public/$ed/index.html" >&2
-              fail=1
-            fi
-          done
-          [ "$fail" = "0" ] && echo "OK: docx + sheets bundles use relative asset paths."
-          exit $fail
-
       - name: Build shell (vite)
+        # vite copies apps/shell/public/{docx,sheets} into dist/, which Tauri
+        # then bundles — so the downloaded editor dist must be in place first.
         working-directory: apps/shell
         run: pnpm build
 
       - name: Build Tauri bundles
         working-directory: apps/shell/src-tauri
-        # `msi` = WiX-based installer; `nsis` = NSIS-based .exe
-        # installer with embedded WebView2 bootstrapper. Both are
-        # produced from the same target/release/deskapp-shell.exe.
+        # `msi` = WiX-based installer; `nsis` = NSIS-based .exe installer with
+        # embedded WebView2 bootstrapper. Both from the same deskapp-shell.exe.
         env:
           # createUpdaterArtifacts signs the NSIS -setup.exe updater artifact.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -180,7 +200,6 @@ jobs:
         run: cargo tauri build --bundles msi,nsis
 
       - name: Stage artifacts + update manifest
-        shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"; VER="${TAG#v}"
@@ -204,20 +223,17 @@ jobs:
           ls -lh release-artifacts/
 
       - name: Attach to GitHub Release
-        # Same tag as release-linux.yml — softprops updates the
-        # existing release with additional files rather than
-        # overwriting it.
+        # Same tag as release-linux.yml — softprops updates the existing
+        # release with additional files rather than overwriting it.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: ${{ steps.tag.outputs.name }}
           draft: false
           # Mark pre-releases (any tag with a hyphen, e.g. v0.0.2-rc1) so the
-          # `releases/latest/download/` alias the updater queries skips them and
-          # production installs aren't pushed an unvalidated build.
+          # `releases/latest/download/` alias the updater queries skips them.
           prerelease: ${{ contains(steps.tag.outputs.name, '-') }}
-          # Don't regenerate notes here — release-linux.yml does
-          # that and we'd otherwise overwrite the merged notes.
+          # Don't regenerate notes here — release-linux.yml does that.
           generate_release_notes: false
           files: |
             release-artifacts/*.msi
