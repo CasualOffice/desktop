@@ -694,8 +694,9 @@ dependencies = [
 
 [[package]]
 name = "deskapp-shell"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
+ "gtk",
  "notify",
  "serde",
  "serde_json",
@@ -704,6 +705,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-single-instance",
+ "webkit2gtk",
 ]
 
 [[package]]

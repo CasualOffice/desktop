@@ -833,6 +833,71 @@ async fn pick_save_path(
     Ok(chosen.map(|p| p.to_string_lossy().to_string()))
 }
 
+/// Export the calling window's current page to a real PDF via the platform
+/// webview's native print-to-PDF, written to a user-chosen path. Routes like
+/// Save As (native dialog) but produces a selectable-text PDF rather than the
+/// unreliable browser `window.print()` path. Returns the chosen path, or None
+/// if the user cancelled the save dialog.
+#[tauri::command]
+async fn export_pdf(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    suggested_name: String,
+) -> Result<Option<String>, String> {
+    // Native save dialog (mirrors pick_save_path).
+    let (tx, rx) = std::sync::mpsc::channel::<Option<PathBuf>>();
+    app.dialog()
+        .file()
+        .set_file_name(&suggested_name)
+        .save_file(move |p| {
+            let _ = tx.send(p.and_then(|fp| fp.into_path().ok()));
+        });
+    let chosen = rx
+        .recv_timeout(Duration::from_secs(120))
+        .map_err(|_| "save dialog timed out or was dismissed".to_string())?;
+    let path = match chosen {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => return Ok(None),
+    };
+    write_window_pdf(&window, &path)?;
+    Ok(Some(path))
+}
+
+/// Render `window`'s webview to a PDF file at `path` using the platform's
+/// native webview print-to-PDF. Linux/WebKitGTK is implemented (the shipped
+/// target); macOS/Windows arms are stubbed until those builds exist.
+fn write_window_pdf(window: &tauri::WebviewWindow, path: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use webkit2gtk::PrintOperationExt;
+        let path = path.to_string();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        window
+            .with_webview(move |webview| {
+                // On Linux `inner()` is the wry-owned `webkit2gtk::WebView`.
+                let wv = webview.inner();
+                let print_op = webkit2gtk::PrintOperation::new(&wv);
+                // Headless export: write straight to a PDF file, no dialog.
+                let settings = gtk::PrintSettings::new();
+                settings.set("output-uri", Some(format!("file://{path}").as_str()));
+                settings.set("output-file-format", Some("pdf"));
+                print_op.set_print_settings(&settings);
+                // Synchronous print to the configured file output.
+                print_op.print();
+                let _ = tx.send(Ok(()));
+            })
+            .map_err(|e| format!("could not access webview: {e}"))?;
+        return rx
+            .recv_timeout(Duration::from_secs(60))
+            .map_err(|_| "PDF export timed out".to_string())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, path);
+        Err("PDF export isn't available on this platform build yet.".to_string())
+    }
+}
+
 /// Wipe the profile file so the next launcher boot routes back into
 /// the first-run wizard. Called from the launcher's Settings panel.
 #[tauri::command]
@@ -1360,6 +1425,7 @@ pub fn run() {
             commit_save_document,
             set_window_dirty,
             pick_save_path,
+            export_pdf,
             reset_profile,
             focus_launcher_window,
             is_first_run,
