@@ -138,12 +138,30 @@ jobs:
 
       - name: Resolve release tag
         id: tag
+        # inputs.tag is passed via env, never interpolated into the script, so a
+        # crafted dispatch value can't inject shell into a token-bearing job.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
           else
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify version matches tag
+        # See release-linux.yml — a tag whose version drifts from
+        # tauri.conf.json makes the updater re-install the same build forever.
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          BASE="${TAG#v}"; BASE="${BASE%%-*}"
+          CONF=$(jq -r .version apps/shell/src-tauri/tauri.conf.json)
+          if [ "$BASE" != "$CONF" ]; then
+            echo "ERROR: tag $TAG (base $BASE) != tauri.conf.json version $CONF." >&2
+            exit 1
+          fi
+          echo "OK: tag base $BASE matches tauri.conf.json $CONF"
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
