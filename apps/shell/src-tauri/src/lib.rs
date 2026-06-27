@@ -252,6 +252,17 @@ fn save_temp_path(path: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Write `bytes` to `path` atomically: stream to a temp sibling, then rename it
+/// over the target. A crash or SIGKILL mid-write leaves the original file
+/// intact instead of the truncated/corrupt half-write that a plain
+/// `fs::write` (truncate-then-stream) would leave — which on next boot would
+/// fail to parse and silently drop the user's profile / settings / registry.
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = save_temp_path(&path.to_string_lossy());
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
 fn recents_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -296,6 +307,15 @@ fn save_recents(app: &AppHandle, list: &[RecentFile]) -> Result<(), String> {
 // bound file (`.<name>.recovery`) on a debounced schedule and registers it, so
 // the launcher can detect orphaned sidecars on relaunch (a crash left them
 // behind). A clean Save clears both the sidecar and the registry entry.
+
+/// Serializes the recovery-registry load-modify-save so concurrent
+/// `write_recovery` / `clear_recovery` / `pending_recoveries` calls from
+/// multiple document windows can't interleave and clobber each other's entries
+/// on disk (the same hazard the recents list guards against by writing under
+/// its mutex). The sidecar bytes themselves are already written atomically; this
+/// protects the shared `recovery.json` index.
+static RECOVERY_REGISTRY_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct RecoveryEntry {
@@ -342,7 +362,7 @@ fn load_recovery_registry(app: &AppHandle) -> Vec<RecoveryEntry> {
 fn save_recovery_registry(app: &AppHandle, list: &[RecoveryEntry]) -> Result<(), String> {
     let path = recovery_registry_path(app)?;
     let bytes = serde_json::to_vec_pretty(list).map_err(|e| e.to_string())?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())
+    atomic_write(&path, &bytes).map_err(|e| e.to_string())
 }
 
 /// Write the latest unsaved bytes to the document's recovery sidecar (atomic
@@ -356,6 +376,9 @@ fn write_recovery(app: AppHandle, path: String, bytes: Vec<u8>) -> Result<(), St
     let tmp = save_temp_path(&sidecar.to_string_lossy());
     std::fs::write(&tmp, &bytes).map_err(|e| format!("write recovery temp: {e}"))?;
     std::fs::rename(&tmp, &sidecar).map_err(|e| format!("commit recovery: {e}"))?;
+    // Serialize the registry read-modify-write so a concurrent save from
+    // another window can't drop our entry (which would orphan the sidecar).
+    let _guard = RECOVERY_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut reg = load_recovery_registry(&app);
     reg.retain(|e| e.path != path);
     reg.push(RecoveryEntry {
@@ -380,6 +403,7 @@ fn read_recovery(path: String) -> Result<Option<Vec<u8>>, String> {
 #[tauri::command]
 fn clear_recovery(app: AppHandle, path: String) -> Result<(), String> {
     let _ = std::fs::remove_file(recovery_sidecar_for(&path));
+    let _guard = RECOVERY_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut reg = load_recovery_registry(&app);
     reg.retain(|e| e.path != path);
     save_recovery_registry(&app, &reg)
@@ -389,6 +413,7 @@ fn clear_recovery(app: AppHandle, path: String) -> Result<(), String> {
 /// by a crash). Prunes stale/cleared entries from the registry on the way.
 #[tauri::command]
 fn pending_recoveries(app: AppHandle) -> Vec<RecoveryEntry> {
+    let _guard = RECOVERY_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut alive = Vec::new();
     let mut keep = Vec::new();
     for e in load_recovery_registry(&app) {
@@ -1272,7 +1297,7 @@ fn save_profile(app: AppHandle, mut profile: Profile) -> Result<Profile, String>
     });
     let path = profile_path(&app)?;
     let bytes = serde_json::to_vec_pretty(&profile).map_err(|e| e.to_string())?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    atomic_write(&path, &bytes).map_err(|e| e.to_string())?;
     Ok(profile)
 }
 
@@ -1422,7 +1447,7 @@ fn broadcast_theme(app: AppHandle, mode: String) {
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
     let path = settings_path(&app)?;
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    atomic_write(&path, &bytes).map_err(|e| e.to_string())?;
     // Best-effort live apply on save. The Settings UI also calls
     // `apply_privacy_mode` explicitly (so it can surface per-window
     // failures), but applying here too keeps any other save_settings
