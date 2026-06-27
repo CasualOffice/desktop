@@ -1,6 +1,6 @@
 {
   "name": "casual-office-ui",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "private": true,
   "description": "Casual Office design system — the React component library behind the deskApp launcher.",
   "license": "Apache-2.0",

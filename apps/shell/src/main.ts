@@ -2189,6 +2189,7 @@ async function maybeCheckForUpdate() {
   if (state.settings.auto_update === false) return;
   // Only meaningful inside the Tauri shell (the plugin isn't present on web).
   if (typeof window === 'undefined' || !('__TAURI__' in window)) return;
+  let downloadStarted = false;
   try {
     const update = await check();
     if (!update) return;
@@ -2201,12 +2202,32 @@ async function maybeCheckForUpdate() {
       cancelLabel: 'Later',
     });
     if (!ok) return;
+    // Guard against data loss: relaunch() kills every window without the
+    // CloseRequested/dirty-flag flow, so refuse to auto-install while a
+    // document has unsaved edits (the prompt can surface minutes after boot,
+    // once the user is mid-edit). Let them save; the update lands next launch.
+    const hasUnsaved = await invoke<boolean>('has_unsaved_documents').catch(() => false);
+    if (hasUnsaved) {
+      await confirmDialog({
+        title: 'Save your work first',
+        body: 'You have unsaved changes in an open document. Save them, then the update will install automatically the next time you start Casual Office.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    downloadStarted = true;
     setStatus('Downloading update…');
     await update.downloadAndInstall();
     await relaunch();
   } catch (err) {
-    // No release yet / offline / endpoint unreachable — stay silent.
+    // Before the download (no release yet / offline / endpoint unreachable)
+    // this is expected — stay quiet. Once the user has opted in and is watching
+    // the "Downloading update…" status, a silent failure reads as a hang:
+    // clear it and surface a brief error instead.
     console.debug('[update] check failed', err);
+    if (downloadStarted) {
+      setStatus('Update failed — please try again later.', 6000);
+    }
   }
 }
 

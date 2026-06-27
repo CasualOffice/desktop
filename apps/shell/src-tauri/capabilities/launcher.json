@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher",
+  "description": "Privileged permissions for the launcher window only. The updater and process-control IPC must NOT be reachable from doc-* windows, which render attacker-controlled .docx/.xlsx/.csv content — a script foothold there could otherwise drive download_and_install or kill the app mid-save. Window creation is also launcher-only (documents open via the open_document_window Rust command).",
+  "windows": ["main"],
+  "permissions": [
+    "core:webview:allow-create-webview-window",
+    "updater:default",
+    "process:default"
+  ]
+}
