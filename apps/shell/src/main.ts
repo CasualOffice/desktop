@@ -357,6 +357,32 @@ async function preflightOpenError(path: string): Promise<string | null> {
 // language. Resolves true on confirm, false on cancel / Escape / backdrop.
 // =============================================================================
 
+/** Focus trap for modals: on Tab/Shift+Tab, keep focus cycling within
+ *  `container`'s visible, enabled focusables instead of escaping to the page
+ *  behind the backdrop. Call from the modal's keydown handler; no-op for
+ *  non-Tab keys. */
+function trapTabKey(e: KeyboardEvent, container: HTMLElement): void {
+  if (e.key !== 'Tab') return;
+  const list = Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+  if (list.length === 0) return;
+  const first = list[0];
+  const last = list[list.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey) {
+    if (active === first || !container.contains(active)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else if (active === last || !container.contains(active)) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 function confirmDialog(opts: {
   title: string;
   body: string;
@@ -379,6 +405,7 @@ function confirmDialog(opts: {
         </div>
       </div>`;
     document.body.appendChild(backdrop);
+    const modalEl = backdrop.querySelector<HTMLElement>('.modal')!;
     const confirmBtn = backdrop.querySelector<HTMLButtonElement>('[data-act=confirm]')!;
     const cancelBtn = backdrop.querySelector<HTMLButtonElement>('[data-act=cancel]')!;
     const finish = (result: boolean) => {
@@ -394,6 +421,8 @@ function confirmDialog(opts: {
       } else if (e.key === 'Enter') {
         e.preventDefault();
         finish(true);
+      } else {
+        trapTabKey(e, modalEl);
       }
     };
     confirmBtn.addEventListener('click', () => finish(true));
@@ -588,6 +617,8 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
     if (e.key === 'Escape') {
       e.preventDefault();
       cleanup();
+    } else {
+      trapTabKey(e, modal);
     }
   };
   // Click on the backdrop (outside the .modal box) cancels.
@@ -1640,6 +1671,8 @@ function showWhatsNew(
     if (e.key === 'Escape' || e.key === 'Enter') {
       e.preventDefault();
       dismiss();
+    } else {
+      trapTabKey(e, modal);
     }
   };
   // Click on the backdrop (outside the modal box) dismisses.
