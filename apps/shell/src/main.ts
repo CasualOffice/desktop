@@ -2190,13 +2190,15 @@ async function maybeOfferRecovery() {
     const name = entry.path.split(/[\\/]/).pop() || entry.path;
     const ok = await confirmDialog({
       title: 'Recover unsaved changes?',
-      body: `“${name}” has unsaved changes from a session that didn't close normally. Reopen it and restore them?`,
-      confirmLabel: 'Recover',
+      body: `“${name}” has unsaved changes from a session that didn't close normally. Reopen it to review and restore them?`,
+      confirmLabel: 'Reopen',
       cancelLabel: 'Discard',
     });
     if (ok) {
-      // Reopen the file; the editor checks for the sidecar on load and applies
-      // it. Remaining recoveries persist and are offered again next launch.
+      // Reopen the file. The editor finds the sidecar on load and surfaces its
+      // own Restore banner (the actual restore decision — with a Discard option
+      // — lives there), so this prompt is just "reopen?", not a second identical
+      // "recover?". Remaining recoveries are offered again next launch.
       openOrReplaceLauncher(kind, entry.path);
       break;
     }

@@ -197,9 +197,8 @@ fn start_file_watch(app: &AppHandle, label: &str, path: &str) {
                     let before = list.len();
                     list.retain(|r| r.path != path_for_cb);
                     if list.len() != before {
-                        let snapshot = list.clone();
-                        drop(list);
-                        let _ = save_recents(&app_for_cb, &snapshot);
+                        // Persist under the lock — see remove_recent_file.
+                        let _ = save_recents(&app_for_cb, list.as_slice());
                     }
                 }
             }
@@ -447,9 +446,11 @@ fn remove_recent_file(
 ) -> Result<(), String> {
     let mut list = state.list.lock().unwrap();
     list.retain(|r| r.path != path);
-    let snapshot = list.clone();
-    drop(list);
-    save_recents(&app, &snapshot)
+    // Persist while still holding the lock: another window's recents update
+    // must not interleave its read-modify-write between our in-memory change
+    // and the disk write, or one of the two writes would clobber the other on
+    // disk (the snapshot-then-write-after-unlock pattern lost entries).
+    save_recents(&app, list.as_slice())
 }
 
 fn touch_recent(app: &AppHandle, state: &RecentsState, path: &str) {
@@ -490,9 +491,8 @@ fn touch_recent(app: &AppHandle, state: &RecentsState, path: &str) {
         }
         *list = kept;
     }
-    let snapshot = list.clone();
-    drop(list);
-    let _ = save_recents(app, &snapshot);
+    // Persist under the lock — see remove_recent_file for why.
+    let _ = save_recents(app, list.as_slice());
 }
 
 #[tauri::command]
@@ -511,9 +511,8 @@ fn set_recent_pinned(
     // Bubble pinned entries to the top while keeping intra-group order
     // (sort_by_key is stable in Rust). Pinned == true sorts before false.
     list.sort_by_key(|r| !r.pinned);
-    let snapshot = list.clone();
-    drop(list);
-    save_recents(&app, &snapshot)
+    // Persist under the lock — see remove_recent_file for why.
+    save_recents(&app, list.as_slice())
 }
 
 /// Open a per-document Tauri window. Each opened file becomes a top-level
@@ -1132,7 +1131,11 @@ async fn save_document_as(
         .save_file(move |p| {
             let _ = tx.send(p.and_then(|fp| fp.into_path().ok()));
         });
-    let chosen = rx.recv().map_err(|e| e.to_string())?;
+    // Time-bounded like pick_save_path: on platforms where the dialog callback
+    // can silently never fire, a bare recv() would hang the command forever.
+    let chosen = rx
+        .recv_timeout(Duration::from_secs(120))
+        .map_err(|_| "save dialog timed out or was dismissed".to_string())?;
     let Some(path) = chosen else {
         return Ok(None);
     };
@@ -1286,7 +1289,11 @@ async fn pick_avatar_image(app: AppHandle) -> Result<Option<String>, String> {
         .pick_file(move |p| {
             let _ = tx.send(p.and_then(|fp| fp.into_path().ok()));
         });
-    let chosen = rx.recv().map_err(|e| e.to_string())?;
+    // Time-bounded like pick_save_path so a dialog callback that never fires
+    // can't hang the avatar-pick command forever.
+    let chosen = rx
+        .recv_timeout(Duration::from_secs(120))
+        .map_err(|_| "image picker timed out or was dismissed".to_string())?;
     let Some(src) = chosen else {
         return Ok(None);
     };
