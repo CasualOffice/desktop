@@ -155,15 +155,30 @@ jobs:
         # `msi` = WiX-based installer; `nsis` = NSIS-based .exe
         # installer with embedded WebView2 bootstrapper. Both are
         # produced from the same target/release/deskapp-shell.exe.
+        env:
+          # createUpdaterArtifacts signs the NSIS -setup.exe updater artifact.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --bundles msi,nsis
 
-      - name: Stage artifacts
+      - name: Stage artifacts + update manifest
+        shell: bash
         run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"; VER="${TAG#v}"
+          BASE="apps/shell/src-tauri/target/release/bundle"
           mkdir -p release-artifacts
-          cp "apps/shell/src-tauri/target/release/bundle/msi/"*.msi \
-             release-artifacts/ 2>/dev/null || true
-          cp "apps/shell/src-tauri/target/release/bundle/nsis/"*.exe \
-             release-artifacts/ 2>/dev/null || true
+          cp "$BASE/msi/"*.msi release-artifacts/ 2>/dev/null || true
+          cp "$BASE/nsis/"*.exe release-artifacts/ 2>/dev/null || true
+          # Updater artifact = the NSIS -setup.exe; createUpdaterArtifacts wrote its .sig.
+          EXE=$(ls "$BASE/nsis/"*-setup.exe | head -1)
+          NAME=$(basename "$EXE")
+          SIG=$(cat "$BASE/nsis/"*-setup.exe.sig)
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$NAME"
+          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" \
+            '{version:$v, pub_date:$p, platforms: {"windows-x86_64": {signature:$sig, url:$url}}}' \
+            > "release-artifacts/windows-x86_64.json"
           ls -lh release-artifacts/
 
       - name: Attach to GitHub Release
@@ -182,3 +197,4 @@ jobs:
           files: |
             release-artifacts/*.msi
             release-artifacts/*.exe
+            release-artifacts/windows-x86_64.json
