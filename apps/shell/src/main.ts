@@ -2169,13 +2169,21 @@ async function boot() {
   hideBootSkeleton();
   if (profile) {
     revealWorkspace();
-    void maybeOfferRecovery();
+    // Serialize the post-boot prompts so the recovery and update dialogs never
+    // stack — both are confirmDialogs that install a global Esc/Enter handler,
+    // and two at once means one keypress resolves both (and can trap focus).
+    // Run as a detached chain so boot itself never waits on them.
+    void (async () => {
+      await maybeOfferRecovery();
+      await maybeCheckForUpdate();
+    })();
   } else {
     $('wizard').hidden = false;
     showWizardStep(1);
+    // No recovery prompt during first-run; the update check is still safe to
+    // fire (best-effort, never gates boot on the network).
+    void maybeCheckForUpdate();
   }
-  // Fire-and-forget after the UI is up — never gate boot on the network.
-  void maybeCheckForUpdate();
 }
 
 /**
