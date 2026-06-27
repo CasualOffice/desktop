@@ -113,7 +113,8 @@ function kindFromPath(path: string): DocKind | null {
     lower.endsWith('.ods') ||
     lower.endsWith('.csv') ||
     lower.endsWith('.tsv') ||
-    lower.endsWith('.tab')
+    lower.endsWith('.tab') ||
+    lower.endsWith('.psv')
   ) {
     return 'sheets';
   }

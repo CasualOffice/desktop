@@ -91,6 +91,13 @@
         "description": "Tab-separated values",
         "mimeType": "text/tab-separated-values",
         "role": "Editor"
+      },
+      {
+        "ext": ["psv"],
+        "name": "Pipe-separated values",
+        "description": "Pipe-separated values",
+        "mimeType": "text/plain",
+        "role": "Editor"
       }
     ],
     "linux": {
