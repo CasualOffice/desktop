@@ -2197,6 +2197,12 @@ async function maybeCheckForUpdate() {
   if (state.settings.auto_update === false) return;
   // Only meaningful inside the Tauri shell (the plugin isn't present on web).
   if (typeof window === 'undefined' || !('__TAURI__' in window)) return;
+  // Don't offer an update the running install can't actually apply in place —
+  // e.g. a Linux .deb, which the AppImage-only updater can't replace. Offering
+  // it just leads to a failed download. Best-effort: assume supported if the
+  // check itself fails.
+  const updatable = await invoke<boolean>('is_update_supported').catch(() => true);
+  if (!updatable) return;
   let downloadStarted = false;
   try {
     const update = await check();

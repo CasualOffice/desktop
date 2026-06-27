@@ -981,6 +981,30 @@ fn has_unsaved_documents(state: tauri::State<'_, DirtyState>) -> bool {
         .any(|(label, dirty)| *dirty && label.starts_with("doc-"))
 }
 
+/// Whether the running install can actually apply an in-place auto-update.
+/// The launcher checks this before offering an update so a user who can't
+/// update isn't prompted to (the download would just fail).
+///
+/// Linux: the Tauri updater replaces the AppImage in place via the `$APPIMAGE`
+/// path, which is only set when running AS an AppImage. A `.deb` install (or
+/// any non-AppImage launch) has no such path, so an update can't apply there.
+///
+/// macOS (`.app`) and Windows (NSIS `-setup.exe`) produce updater artifacts and
+/// are assumed updatable. A `.msi`-installed Windows app can't update in place,
+/// but the installer type isn't reliably detectable at runtime — that gap is
+/// documented in docs/AUTO_UPDATE.md rather than guessed at here.
+#[tauri::command]
+fn is_update_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("APPIMAGE").is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Show a Save As dialog and return the picked path without writing
 /// anything. The editor then chunks bytes into write_save_chunk calls.
 /// Returns Ok(None) if the user cancels.
@@ -1727,6 +1751,7 @@ pub fn run() {
             commit_save_document,
             set_window_dirty,
             has_unsaved_documents,
+            is_update_supported,
             pick_open_document,
             pick_save_path,
             export_pdf,
