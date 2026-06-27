@@ -554,17 +554,35 @@ async fn open_document_window(
 ) -> Result<String, String> {
     // Sticky-window: if this exact file is already open in another doc
     // window, focus that one instead of creating a duplicate.
+    //
+    // Match on the DECODED `file` query param, not a raw substring of the URL.
+    // The webview re-encodes the URL it reports from window.url(), so a
+    // byte-compare against our own urlencoding_lite output silently missed
+    // whenever the path had a space or non-ASCII char (and substring-matched
+    // too eagerly for prefix paths). query_pairs() percent-decodes for us, and
+    // we compare canonical paths so two spellings of the same file (symlink,
+    // trailing slash, case) still resolve to one window.
     if let Some(p) = file_path.as_deref() {
+        let target = std::fs::canonicalize(p).ok();
+        let same_file = |candidate: &str| -> bool {
+            match &target {
+                Some(t) => std::fs::canonicalize(candidate).ok().as_ref() == Some(t),
+                // File doesn't exist on disk (yet) — fall back to exact match.
+                None => candidate == p,
+            }
+        };
         for window in app.webview_windows().values() {
             let label = window.label();
             if !label.starts_with("doc-") {
                 continue;
             }
             if let Ok(url) = window.url() {
-                if let Some(q) = url.query() {
-                    let mut wants = "file=".to_string();
-                    wants.push_str(&urlencoding_lite(p));
-                    if q.contains(&wants) {
+                let opened = url
+                    .query_pairs()
+                    .find(|(k, _)| k == "file")
+                    .map(|(_, v)| v.into_owned());
+                if let Some(opened) = opened {
+                    if same_file(&opened) {
                         let _ = window.show();
                         let _ = window.unminimize();
                         let _ = window.set_focus();
