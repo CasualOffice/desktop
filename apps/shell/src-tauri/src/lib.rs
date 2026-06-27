@@ -947,6 +947,22 @@ fn set_window_dirty(
         .insert(window.label().to_string(), dirty);
 }
 
+/// True if any open *document* window has unsaved edits. The launcher checks
+/// this before an auto-update relaunch — `relaunch()` tears the process down
+/// without dispatching the per-window CloseRequested events the unsaved-close
+/// guard relies on, so installing an update while a doc-* window is dirty would
+/// silently discard the user's work. Only `doc-*` labels count; "main" is the
+/// launcher and never holds document edits.
+#[tauri::command]
+fn has_unsaved_documents(state: tauri::State<'_, DirtyState>) -> bool {
+    state
+        .flags
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(label, dirty)| *dirty && label.starts_with("doc-"))
+}
+
 /// Show a Save As dialog and return the picked path without writing
 /// anything. The editor then chunks bytes into write_save_chunk calls.
 /// Returns Ok(None) if the user cancels.
@@ -1565,8 +1581,12 @@ fn open_file_path(app: &AppHandle, path: String) {
 }
 
 #[tauri::command]
-fn get_app_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+fn get_app_version(app: AppHandle) -> String {
+    // Single source of truth = the version Tauri baked in from tauri.conf.json
+    // (what the updater compares against), NOT env!("CARGO_PKG_VERSION") — the
+    // latter froze at 0.0.1 because the release checklist only bumps the config,
+    // which left Settings→About and the What's-new gate showing a stale version.
+    app.package_info().version.to_string()
 }
 
 
@@ -1663,6 +1683,7 @@ pub fn run() {
             write_save_chunk,
             commit_save_document,
             set_window_dirty,
+            has_unsaved_documents,
             pick_save_path,
             export_pdf,
             write_recovery,
