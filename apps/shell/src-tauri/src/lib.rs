@@ -1005,6 +1005,31 @@ async fn pick_save_path(
     Ok(chosen.map(|p| p.to_string_lossy().to_string()))
 }
 
+/// Show a native open dialog filtered to the supported document types and
+/// return the chosen path (or None if cancelled). Mirrors pick_save_path; used
+/// by the editor's File → Open so a menu-opened file has a real filesystem path
+/// (the browser picker doesn't), which is what lets it open in a new window.
+/// The caller infers the editor kind from the extension.
+#[tauri::command]
+async fn pick_open_document(app: AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<PathBuf>>();
+    app.dialog()
+        .file()
+        .add_filter(
+            "Documents",
+            &[
+                "docx", "txt", "md", "markdown", "xlsx", "xlsm", "ods", "csv", "tsv", "tab",
+            ],
+        )
+        .pick_file(move |p| {
+            let _ = tx.send(p.and_then(|fp| fp.into_path().ok()));
+        });
+    let chosen = rx
+        .recv_timeout(Duration::from_secs(120))
+        .map_err(|_| "open dialog timed out or was dismissed".to_string())?;
+    Ok(chosen.map(|p| p.to_string_lossy().to_string()))
+}
+
 /// Export the calling window's current page to a real PDF via the platform
 /// webview's native print-to-PDF, written to a user-chosen path. Routes like
 /// Save As (native dialog) but produces a selectable-text PDF rather than the
@@ -1702,6 +1727,7 @@ pub fn run() {
             commit_save_document,
             set_window_dirty,
             has_unsaved_documents,
+            pick_open_document,
             pick_save_path,
             export_pdf,
             write_recovery,
