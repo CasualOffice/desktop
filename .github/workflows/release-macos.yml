@@ -88,14 +88,18 @@ jobs:
             apps/shell/src-tauri/target
           key: cargo-${{ runner.os }}-${{ hashFiles('apps/shell/src-tauri/Cargo.lock') }}
 
-      - name: Clone docx editor (main, with submodules)
+      - name: Clone docx editor (main, with design-system submodule)
         # docx-editor/styles.css @imports the @schnsrw/design-system tokens
         # vendored at docx-editor/vendor/design-system (a submodule) — the
-        # build fails without it checked out.
+        # build fails with a missing dist/tokens.css without it checked out.
+        # The .gitmodules URL is SSH, so rewrite SSH->HTTPS first or the
+        # submodule update fails on the runner (no deploy key).
         run: |
-          git clone --branch main \
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch main \
             https://github.com/CasualOffice/docs.git docx
-          git -C docx submodule update --init --recursive docx-editor/vendor/design-system
+          git -C docx submodule update --init --recursive --depth 1 \
+            docx-editor/vendor/design-system
           (cd docx/docx-editor && bun install)
 
       - name: Clone sheets editor (main, with submodules)
@@ -176,7 +180,11 @@ jobs:
           NAME=$(basename "$TARBALL")
           SIG=$(cat "$BASE/macos/"*.app.tar.gz.sig)
           cp "$TARBALL" release-artifacts/
-          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$NAME"
+          # GitHub's release-asset API rewrites spaces in filenames to '.', so the
+          # served asset name differs from the local basename (productName
+          # "Casual Office" contains a space). Match it or the updater 404s.
+          ASSET="${NAME// /.}"
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
           PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           # One universal binary serves both Apple Silicon and Intel — emit a
           # manifest per arch key the updater may request ({{target}}-{{arch}}).
@@ -193,7 +201,10 @@ jobs:
           tag_name: ${{ steps.tag.outputs.name }}
           name: ${{ steps.tag.outputs.name }}
           draft: false
-          prerelease: false
+          # Mark pre-releases (any tag with a hyphen, e.g. v0.0.2-rc1) so the
+          # `releases/latest/download/` alias the updater queries skips them and
+          # production installs aren't pushed an unvalidated build.
+          prerelease: ${{ contains(steps.tag.outputs.name, '-') }}
           generate_release_notes: true
           files: |
             release-artifacts/*.dmg
