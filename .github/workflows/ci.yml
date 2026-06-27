@@ -132,11 +132,15 @@ jobs:
         with:
           languages: javascript-typescript
           # The editors live in separate repos; only scan first-party code.
-          paths-ignore:
-            - docx
-            - sheets
-            - '**/dist'
-            - '**/demo-dist'
+          # paths-ignore is a CodeQL *config* key, not a direct action input —
+          # passing it under `with:` makes GitHub reject the whole workflow at
+          # startup (undefined input on codeql-action/init).
+          config: |
+            paths-ignore:
+              - docx
+              - sheets
+              - '**/dist'
+              - '**/demo-dist'
       - uses: github/codeql-action/analyze@v3
 
   # ---- Supply-chain: block PRs that introduce vulnerable/incompatible deps ----
