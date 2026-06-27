@@ -1066,7 +1066,7 @@ fn write_window_pdf(window: &tauri::WebviewWindow, path: &str) -> Result<(), Str
                         move |hr, success| {
                             let _ = tx2.send(if hr.is_err() {
                                 Err(format!("PrintToPdf failed: {hr:?}"))
-                            } else if !success.as_bool() {
+                            } else if !success {
                                 Err("PrintToPdf reported failure".to_string())
                             } else {
                                 Ok(())
