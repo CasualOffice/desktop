@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       tag: ${{ steps.tag.outputs.name }}
+      pub_date: ${{ steps.meta.outputs.pub_date }}
     steps:
       - name: Checkout deskApp
         uses: actions/checkout@v4
@@ -57,6 +58,13 @@ jobs:
           else
             echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Compute publish timestamp
+        id: meta
+        # One pub_date for the whole release so every platform manifest (and the
+        # two macOS per-arch manifests) carries the same timestamp instead of
+        # each job stamping its own slightly-different `date -u`.
+        run: echo "pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Verify version matches tag
         # A tag whose version drifts from tauri.conf.json makes the updater
@@ -231,7 +239,7 @@ jobs:
           # updater 404s (productName "Casual Office" has a space).
           ASSET="${NAME// /.}"
           URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
-          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PUB="${{ needs.editors.outputs.pub_date }}"
           jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" \
             '{version:$v, pub_date:$p, platforms: {"linux-x86_64": {signature:$sig, url:$url}}}' \
             > "release-artifacts/linux-x86_64.json"
@@ -311,7 +319,7 @@ jobs:
           cp "$TARBALL" release-artifacts/
           ASSET="${NAME// /.}"
           URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
-          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PUB="${{ needs.editors.outputs.pub_date }}"
           # One universal binary serves both arches — emit a manifest per key.
           for ARCH in aarch64 x86_64; do
             jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" --arg key "darwin-$ARCH" \
@@ -397,7 +405,7 @@ jobs:
           SIG=$(cat "$BASE/nsis/"*-setup.exe.sig)
           ASSET="${NAME// /.}"
           URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$ASSET"
-          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PUB="${{ needs.editors.outputs.pub_date }}"
           jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" \
             '{version:$v, pub_date:$p, platforms: {"windows-x86_64": {signature:$sig, url:$url}}}' \
             > "release-artifacts/windows-x86_64.json"
