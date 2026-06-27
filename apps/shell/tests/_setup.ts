@@ -26,6 +26,7 @@ export interface MockState {
     open_window_preference?: 'ask' | 'same' | 'new';
     last_seen_version?: string | null;
     privacy_mode?: boolean;
+    auto_update?: boolean;
   };
   recents: Array<{
     path: string;
@@ -35,6 +36,8 @@ export interface MockState {
   }>;
   recoveries?: Array<{ path: string; recovery_path: string; saved_at: number }>;
   app_version: string;
+  /** What is_update_supported returns (drives the install-format gate). */
+  update_supported?: boolean;
 }
 
 export const defaultState: MockState = {
@@ -119,6 +122,15 @@ export async function mockTauri(page: Page, state: Partial<MockState> = {}) {
               return;
             case 'get_app_version':
               return s.app_version;
+            case 'is_update_supported':
+              return s.update_supported ?? true;
+            case 'has_unsaved_documents':
+              return false;
+            // The plugin-updater JS wrapper's check() dispatches this. Default
+            // to "no update available" (null) so the gate logic runs without a
+            // real download. Tests assert whether this was reached at all.
+            case 'plugin:updater|check':
+              return null;
             case 'pending_recoveries':
               return s.recoveries ?? [];
             case 'write_recovery':
