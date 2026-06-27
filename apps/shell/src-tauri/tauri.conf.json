@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Casual Office",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "live.schnsrw.casualoffice",
   "build": {
     "frontendDist": "../dist",
@@ -30,6 +30,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "category": "Productivity",
     "shortDescription": "Casual Office — local Word & Excel editor",
     "longDescription": "Casual Office is a local-only desktop editor for Word (.docx) and Excel (.xlsx, .ods, .csv, .tsv) documents. Files never leave your machine.",
@@ -101,7 +102,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/CasualOffice/desktop/releases/latest/download/latest.json"
+        "https://github.com/CasualOffice/desktop/releases/latest/download/{{target}}-{{arch}}.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFENEE3Nzg4RjFCMTE5MEQKUldRTkdiSHhpSGRLSFpPOVNUeUYwRHd5S3RvckNrWWVkZTZiRDJxZjc4ajc2T3Y0YUM1UDRhVy8K"
     }

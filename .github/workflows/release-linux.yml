@@ -170,18 +170,29 @@ jobs:
 
       - name: Build Tauri bundles
         working-directory: apps/shell/src-tauri
+        env:
+          # createUpdaterArtifacts signs the AppImage updater artifact.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --bundles deb,appimage
-        # tauri-cli expected to be available via `cargo install
-        # tauri-cli` if not already pinned. Fall back to local pnpm
-        # script if cargo binary isn't on PATH.
 
-      - name: Stage artifacts
+      - name: Stage artifacts + update manifest
         run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"; VER="${TAG#v}"
+          BASE="apps/shell/src-tauri/target/release/bundle"
           mkdir -p release-artifacts
-          cp "apps/shell/src-tauri/target/release/bundle/deb/"*.deb \
-             release-artifacts/
-          cp "apps/shell/src-tauri/target/release/bundle/appimage/"*.AppImage \
-             release-artifacts/
+          cp "$BASE/deb/"*.deb release-artifacts/
+          cp "$BASE/appimage/"*.AppImage release-artifacts/
+          # Updater artifact = the AppImage; createUpdaterArtifacts wrote its .sig.
+          APPIMAGE=$(ls "$BASE/appimage/"*.AppImage | head -1)
+          NAME=$(basename "$APPIMAGE")
+          SIG=$(cat "$BASE/appimage/"*.AppImage.sig)
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$NAME"
+          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" \
+            '{version:$v, pub_date:$p, platforms: {"linux-x86_64": {signature:$sig, url:$url}}}' \
+            > "release-artifacts/linux-x86_64.json"
           ls -lh release-artifacts/
 
       - name: Create / update GitHub Release
@@ -195,6 +206,7 @@ jobs:
           files: |
             release-artifacts/*.deb
             release-artifacts/*.AppImage
+            release-artifacts/linux-x86_64.json
           body: |
             Casual Office ${{ steps.tag.outputs.name }} — Linux build.
 

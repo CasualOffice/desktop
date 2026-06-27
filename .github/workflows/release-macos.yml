@@ -155,15 +155,36 @@ jobs:
         working-directory: apps/shell
         run: pnpm build
 
-      - name: Build Tauri bundles (universal .app + .dmg)
+      - name: Build Tauri bundles (universal .app + .dmg + signed updater)
         working-directory: apps/shell/src-tauri
+        env:
+          # createUpdaterArtifacts (tauri.conf.json) signs the .app.tar.gz with
+          # this key; the matching public key is pinned in plugins.updater.pubkey.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --target universal-apple-darwin --bundles app,dmg
 
-      - name: Stage artifacts
+      - name: Stage artifacts + per-arch update manifests
         run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"; VER="${TAG#v}"
+          BASE="apps/shell/src-tauri/target/universal-apple-darwin/release/bundle"
           mkdir -p release-artifacts
-          cp "apps/shell/src-tauri/target/universal-apple-darwin/release/bundle/dmg/"*.dmg \
-             release-artifacts/
+          cp "$BASE/dmg/"*.dmg release-artifacts/
+          # Updater artifact: the signed .app.tar.gz produced by createUpdaterArtifacts.
+          TARBALL=$(ls "$BASE/macos/"*.app.tar.gz | head -1)
+          NAME=$(basename "$TARBALL")
+          SIG=$(cat "$BASE/macos/"*.app.tar.gz.sig)
+          cp "$TARBALL" release-artifacts/
+          URL="https://github.com/CasualOffice/desktop/releases/download/$TAG/$NAME"
+          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # One universal binary serves both Apple Silicon and Intel — emit a
+          # manifest per arch key the updater may request ({{target}}-{{arch}}).
+          for ARCH in aarch64 x86_64; do
+            jq -n --arg v "$VER" --arg p "$PUB" --arg sig "$SIG" --arg url "$URL" --arg key "darwin-$ARCH" \
+              '{version:$v, pub_date:$p, platforms: {($key): {signature:$sig, url:$url}}}' \
+              > "release-artifacts/darwin-$ARCH.json"
+          done
           ls -lh release-artifacts/
 
       - name: Create / update GitHub Release
@@ -176,6 +197,8 @@ jobs:
           generate_release_notes: true
           files: |
             release-artifacts/*.dmg
+            release-artifacts/*.app.tar.gz
+            release-artifacts/darwin-*.json
           body: |
             Casual Office ${{ steps.tag.outputs.name }} — macOS build (universal).
 
