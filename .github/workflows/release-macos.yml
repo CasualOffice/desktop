@@ -126,6 +126,11 @@ jobs:
 
       - name: Build sheets editor
         working-directory: sheets/apps/web
+        env:
+          # Univer's bundle is large; the macos-14 runner's default Node heap
+          # (~2 GB) OOMs during `vite build` (FATAL: JS heap out of memory).
+          # Raise the old-space ceiling so the build fits.
+          NODE_OPTIONS: --max-old-space-size=4096
         # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
         # in the Tauri shell. main's `build` script omits --base by design (the
         # web deploy needs an absolute base for SPA sub-routes), so pass it here.

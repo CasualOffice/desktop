@@ -9,10 +9,16 @@ name: Release Windows
 # Cross-repo wiring matches the Linux workflow: clone the editors at
 # the desk_v0.0.0/* branches, build each, copy dists into
 # apps/shell/public/, then build the Tauri shell.
+#
+# NOTE: manual-only for now. The vendored Univer fork's
+# @univerjs/engine-render build fails on Windows with
+# ERR_UNSUPPORTED_ESM_URL_SCHEME (Node's ESM loader rejecting an absolute
+# `D:\...` path passed to `node --experimental-strip-types`). That code is
+# in sheets/vendor/univer-revamp (read-only upstream), so it needs an
+# upstream fix before Windows can build. Until then, tag pushes ship a
+# clean Linux + macOS release instead of a perpetually red Windows job.
+# Re-add the `push: tags: ['v*']` trigger once the fork builds on Windows.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -125,6 +131,10 @@ jobs:
 
       - name: Build sheets editor
         working-directory: sheets/apps/web
+        env:
+          # Univer's bundle is large; raise Node's old-space ceiling so the
+          # `vite build` doesn't OOM on memory-constrained runners.
+          NODE_OPTIONS: --max-old-space-size=4096
         # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
         # in the Tauri shell. main's `build` script omits --base by design (the
         # web deploy needs an absolute base for SPA sub-routes), so pass it here.
