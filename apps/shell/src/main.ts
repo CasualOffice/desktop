@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 
 // =============================================================================
 // Types
@@ -39,6 +41,9 @@ interface Settings {
   /** Warn before closing a document window with unsaved changes.
    *  Defaults to true on the Rust side. */
   warn_on_unsaved_close?: boolean;
+  /** Check GitHub releases for a newer version on launch and offer to
+   *  install it. Defaults to true on the Rust side. */
+  auto_update?: boolean;
 }
 
 /**
@@ -1876,6 +1881,7 @@ function populateSettings() {
     radio.checked = radio.value === openPref;
   }
   $<HTMLInputElement>('settings-warn-close').checked = state.settings.warn_on_unsaved_close !== false;
+  $<HTMLInputElement>('settings-auto-update').checked = state.settings.auto_update !== false;
   for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-theme]')) {
     radio.checked = radio.value === state.settings.theme;
   }
@@ -2059,6 +2065,7 @@ function bindSettings() {
       privacy_mode: $<HTMLInputElement>('settings-privacy').checked,
       open_window_preference: openPref,
       warn_on_unsaved_close: $<HTMLInputElement>('settings-warn-close').checked,
+      auto_update: $<HTMLInputElement>('settings-auto-update').checked,
     };
     const saveBtn = $<HTMLButtonElement>('settings-save');
     const originalLabel = saveBtn.textContent ?? 'Save changes';
@@ -2166,6 +2173,40 @@ async function boot() {
   } else {
     $('wizard').hidden = false;
     showWizardStep(1);
+  }
+  // Fire-and-forget after the UI is up — never gate boot on the network.
+  void maybeCheckForUpdate();
+}
+
+/**
+ * Check GitHub releases for a newer signed build and, if the user agrees,
+ * download + install it and relaunch. Gated behind the `auto_update` setting
+ * (default on). Entirely best-effort: before the first release is published
+ * the endpoint 404s, and offline / network errors are swallowed — an update
+ * check must never disrupt or block the launcher.
+ */
+async function maybeCheckForUpdate() {
+  if (state.settings.auto_update === false) return;
+  // Only meaningful inside the Tauri shell (the plugin isn't present on web).
+  if (typeof window === 'undefined' || !('__TAURI__' in window)) return;
+  try {
+    const update = await check();
+    if (!update) return;
+    const ok = await confirmDialog({
+      title: `Update available — ${update.version}`,
+      body: `A newer version of Casual Office (${update.version}) is available.${
+        update.body ? `\n\n${update.body}` : ''
+      }\n\nInstall it now? The app will restart.`,
+      confirmLabel: 'Install & restart',
+      cancelLabel: 'Later',
+    });
+    if (!ok) return;
+    setStatus('Downloading update…');
+    await update.downloadAndInstall();
+    await relaunch();
+  } catch (err) {
+    // No release yet / offline / endpoint unreachable — stay silent.
+    console.debug('[update] check failed', err);
   }
 }
 

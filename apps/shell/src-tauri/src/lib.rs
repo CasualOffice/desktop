@@ -1224,9 +1224,18 @@ struct Settings {
     /// (which predate this field) keep the safe behavior.
     #[serde(default = "default_warn_on_unsaved_close")]
     warn_on_unsaved_close: bool,
+    /// Check GitHub releases for a newer version on launch and offer to install
+    /// it. Defaults to true via `default_auto_update` so settings.json files
+    /// that predate this field keep auto-update on.
+    #[serde(default = "default_auto_update")]
+    auto_update: bool,
 }
 
 fn default_warn_on_unsaved_close() -> bool {
+    true
+}
+
+fn default_auto_update() -> bool {
     true
 }
 
@@ -1239,6 +1248,7 @@ impl Default for Settings {
             last_seen_version: None,
             privacy_mode: false,
             warn_on_unsaved_close: true,
+            auto_update: true,
         }
     }
 }
@@ -1584,6 +1594,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let initial = load_recents(&app.handle());
             app.manage(RecentsState {
