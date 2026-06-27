@@ -969,7 +969,15 @@ em.muted { color: var(--muted); font-style: normal; font-size: 11px; }
   border: 1px solid var(--line);
 }
 .modal h2 { font-size: 18px; text-transform: none; letter-spacing: -0.01em; color: var(--fg); margin-bottom: 6px; }
-.modal p.sub { margin-bottom: 18px; }
+.modal p.sub {
+  margin-bottom: 18px;
+  /* Preserve newlines in dialog bodies (e.g. the update changelog joined with
+     \n\n) instead of collapsing them into a run-on paragraph; cap height so a
+     long changelog scrolls rather than pushing the dialog off-screen. */
+  white-space: pre-line;
+  max-height: 40vh;
+  overflow-y: auto;
+}
 .modal-actions { display: flex; gap: 8px; }
 .modal-actions button { flex: 1; }
 .modal-remember {
