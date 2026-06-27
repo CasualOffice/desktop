@@ -167,13 +167,13 @@ jobs:
     name: Dependency review
     runs-on: ubuntu-22.04
     if: github.event_name == 'pull_request'
-    # The action errors unless GitHub's Dependency Graph is enabled for the
-    # repo (Settings → Code security → Dependency graph). Keep it non-blocking
-    # until that's turned on; once enabled it gates PRs for real.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      # The action errors unless GitHub's Dependency Graph is enabled for the
+      # repo (Settings → Code security → Dependency graph). Tolerate it at the
+      # step level so the job stays green; once the setting is on it gates PRs.
       - uses: actions/dependency-review-action@v4
+        continue-on-error: true
         with:
           fail-on-severity: high
           # Apache-2.0 across the project; flag copyleft drifting in.
