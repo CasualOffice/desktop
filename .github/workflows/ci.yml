@@ -87,6 +87,37 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # ---- Cross-platform Rust compile check ----
+  # The release ships for macOS, Windows and Linux. The job above already
+  # compiles the Rust on Linux (ubuntu); these compile it on the other two so a
+  # platform-gated path (e.g. the native PDF arms — WKWebView / WebView2 /
+  # WebKitGTK) can't break a release build without showing up on the PR.
+  rust-macos:
+    name: Rust check (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/shell/src-tauri
+      - name: cargo check
+        working-directory: apps/shell/src-tauri
+        run: cargo check --all-targets
+
+  rust-windows:
+    name: Rust check (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/shell/src-tauri
+      - name: cargo check
+        working-directory: apps/shell/src-tauri
+        run: cargo check --all-targets
+
   # ---- CodeQL static analysis for JavaScript/TypeScript ----
   codeql:
     name: CodeQL (javascript-typescript)
