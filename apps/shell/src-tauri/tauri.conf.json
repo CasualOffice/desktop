@@ -97,5 +97,13 @@
         "postInstallScript": "scripts/postinst.sh"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/CasualOffice/desktop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFENEE3Nzg4RjFCMTE5MEQKUldRTkdiSHhpSGRLSFpPOVNUeUYwRHd5S3RvckNrWWVkZTZiRDJxZjc4ajc2T3Y0YUM1UDRhVy8K"
+    }
   }
 }
