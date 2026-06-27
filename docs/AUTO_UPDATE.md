@@ -44,6 +44,15 @@ nothing.
   `TAURI_SIGNING_PRIVATE_KEY` CI secret; the app verifies them against
   `plugins.updater.pubkey`.
 
+- **Which installs can auto-update:** in-place update works for the **AppImage**
+  (Linux), the **`.app`** (macOS), and the **NSIS `-setup.exe`** (Windows). It
+  does **not** work for a **`.deb`** (the updater only replaces an AppImage via
+  `$APPIMAGE`) or a **`.msi`** (only NSIS is updatable). The launcher's
+  `is_update_supported` command gates the check so a `.deb` user isn't offered
+  an update that can't apply; the `.msi` case isn't reliably detectable at
+  runtime, so a `.msi` user may see an offer that no-ops — prefer the
+  `-setup.exe` on Windows if you want auto-updates.
+
 ## Keys
 
 - Generated once with `pnpm tauri signer generate` (empty password).
