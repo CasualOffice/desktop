@@ -1170,6 +1170,40 @@ function bindHomePanel() {
       target.focus();
     });
   });
+
+  // Keep the hero greeting honest when the launcher regains focus after sitting
+  // idle across a time boundary (UX-AUDIT §2). Cheap — just re-reads the clock.
+  const refreshGreetingIfVisible = () => {
+    if (!$('workspace').hidden) renderGreeting();
+  };
+  window.addEventListener('focus', refreshGreetingIfVisible);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshGreetingIfVisible();
+  });
+
+  // Recent cards: arrow keys add a fast path to move focus between cards. The
+  // grid previously relied on Tab cycling through every card + its ⋯ button
+  // (UX-AUDIT §2). Additive — Tab order is unchanged; Up/Down/Left/Right + Home
+  // /End simply hop card-to-card. Delegated on the container so it survives the
+  // frequent renderRecents() re-renders. Ignored when focus is on the ⋯ button
+  // (a sibling of the card, not a descendant) so its own behaviour is untouched.
+  const groupsEl = $('recent-groups');
+  groupsEl.addEventListener('keydown', (e) => {
+    const card = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('.recent-card');
+    if (!card) return;
+    const nav = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!nav.includes(e.key)) return;
+    const cards = Array.from(groupsEl.querySelectorAll<HTMLButtonElement>('.recent-card'));
+    const cur = cards.indexOf(card);
+    if (cur < 0) return;
+    let next = cur;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = (cur + 1) % cards.length;
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') next = (cur - 1 + cards.length) % cards.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = cards.length - 1;
+    e.preventDefault();
+    cards[next]?.focus();
+  });
 }
 
 // =============================================================================
@@ -1632,6 +1666,19 @@ async function skipWizard() {
 // Workspace boot
 // =============================================================================
 
+/** Set the hero greeting from the current clock. Pulled out of revealWorkspace
+ *  so it can be re-run when the launcher regains focus — otherwise a window
+ *  left open across a time boundary (e.g. morning → evening) keeps stale text
+ *  until a reload (UX-AUDIT §2). No-op until the profile is loaded. */
+function renderGreeting() {
+  if (!state.profile) return;
+  const greet = $('greeting');
+  const hr = new Date().getHours();
+  const partOfDay =
+    hr < 5 ? 'Working late' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+  greet.textContent = `${partOfDay}, ${state.profile.name.split(/\s+/)[0]}`;
+}
+
 function revealWorkspace() {
   $('wizard').hidden = true;
   $('workspace').hidden = false;
@@ -1639,10 +1686,7 @@ function revealWorkspace() {
     renderAvatar($<HTMLSpanElement>('user-avatar'), state.profile);
     const chipName = document.getElementById('user-chip-name');
     if (chipName) chipName.textContent = state.profile.name.split(/\s+/)[0];
-    const greet = $('greeting');
-    const hr = new Date().getHours();
-    const partOfDay = hr < 5 ? 'Working late' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
-    greet.textContent = `${partOfDay}, ${state.profile.name.split(/\s+/)[0]}`;
+    renderGreeting();
   }
   refreshRecents();
   maybeShowWhatsNew();
