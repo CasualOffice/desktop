@@ -292,6 +292,120 @@ fn save_recents(app: &AppHandle, list: &[RecentFile]) -> Result<(), String> {
     Ok(())
 }
 
+// ---- Crash-recovery sidecars ------------------------------------------------
+// The editor writes the latest unsaved bytes to a hidden sidecar next to the
+// bound file (`.<name>.recovery`) on a debounced schedule and registers it, so
+// the launcher can detect orphaned sidecars on relaunch (a crash left them
+// behind). A clean Save clears both the sidecar and the registry entry.
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct RecoveryEntry {
+    /// The document's real on-disk path.
+    path: String,
+    /// The sidecar holding the latest unsaved bytes.
+    recovery_path: String,
+    /// Unix seconds of the last recovery write.
+    saved_at: u64,
+}
+
+fn recovery_sidecar_for(path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "document".to_string());
+    let dir = p
+        .parent()
+        .map(|d| d.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    dir.join(format!(".{name}.recovery"))
+}
+
+fn recovery_registry_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("config dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir config dir: {e}"))?;
+    Ok(dir.join("recovery.json"))
+}
+
+fn load_recovery_registry(app: &AppHandle) -> Vec<RecoveryEntry> {
+    let Ok(path) = recovery_registry_path(app) else {
+        return Vec::new();
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+fn save_recovery_registry(app: &AppHandle, list: &[RecoveryEntry]) -> Result<(), String> {
+    let path = recovery_registry_path(app)?;
+    let bytes = serde_json::to_vec_pretty(list).map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())
+}
+
+/// Write the latest unsaved bytes to the document's recovery sidecar (atomic
+/// temp + rename) and register it. Called by the editor's debounced autosave.
+#[tauri::command]
+fn write_recovery(app: AppHandle, path: String, bytes: Vec<u8>) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("refusing to write an empty recovery snapshot".to_string());
+    }
+    let sidecar = recovery_sidecar_for(&path);
+    let tmp = save_temp_path(&sidecar.to_string_lossy());
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("write recovery temp: {e}"))?;
+    std::fs::rename(&tmp, &sidecar).map_err(|e| format!("commit recovery: {e}"))?;
+    let mut reg = load_recovery_registry(&app);
+    reg.retain(|e| e.path != path);
+    reg.push(RecoveryEntry {
+        path,
+        recovery_path: sidecar.to_string_lossy().to_string(),
+        saved_at: now_secs(),
+    });
+    save_recovery_registry(&app, &reg)
+}
+
+/// Read the recovery bytes for `path`, if a sidecar exists.
+#[tauri::command]
+fn read_recovery(path: String) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(recovery_sidecar_for(&path)) {
+        Ok(b) => Ok(Some(b)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Delete the recovery sidecar + registry entry for `path` — on a clean Save or
+/// when the user discards a recovery.
+#[tauri::command]
+fn clear_recovery(app: AppHandle, path: String) -> Result<(), String> {
+    let _ = std::fs::remove_file(recovery_sidecar_for(&path));
+    let mut reg = load_recovery_registry(&app);
+    reg.retain(|e| e.path != path);
+    save_recovery_registry(&app, &reg)
+}
+
+/// Registered recoveries whose sidecar AND original file still exist (orphaned
+/// by a crash). Prunes stale/cleared entries from the registry on the way.
+#[tauri::command]
+fn pending_recoveries(app: AppHandle) -> Vec<RecoveryEntry> {
+    let mut alive = Vec::new();
+    let mut keep = Vec::new();
+    for e in load_recovery_registry(&app) {
+        if std::path::Path::new(&e.recovery_path).exists()
+            && std::path::Path::new(&e.path).exists()
+        {
+            alive.push(e.clone());
+            keep.push(e);
+        } else {
+            let _ = std::fs::remove_file(&e.recovery_path);
+        }
+    }
+    let _ = save_recovery_registry(&app, &keep);
+    alive
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1426,6 +1540,10 @@ pub fn run() {
             set_window_dirty,
             pick_save_path,
             export_pdf,
+            write_recovery,
+            read_recovery,
+            clear_recovery,
+            pending_recoveries,
             reset_profile,
             focus_launcher_window,
             is_first_run,
