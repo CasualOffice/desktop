@@ -638,11 +638,22 @@ async fn open_document_window(
         .resizable(true)
         .maximized(true)
         .focused(true)
+        // Start hidden so the first frame the user sees is the editor's
+        // full-window boot overlay — not WebKitGTK's small initial webview
+        // render plus the inner_size->maximized settle (the "small box scales
+        // to full width" flash on cold start). The bridge calls window.show()
+        // as soon as it paints the overlay; this page-load hook is a fallback
+        // so the window can never stay hidden if the bridge JS fails to run.
+        .visible(false)
+        .on_page_load(|win, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        })
         .build()
         .map_err(|e| e.to_string())?;
-    let _ = window.show();
     let _ = window.unminimize();
-    let _ = window.set_focus();
     if get_settings(app.clone()).privacy_mode {
         let _ = window.set_content_protected(true);
     }
