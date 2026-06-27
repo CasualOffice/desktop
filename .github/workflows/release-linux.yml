@@ -136,6 +136,10 @@ jobs:
 
       - name: Build sheets editor
         working-directory: sheets/apps/web
+        env:
+          # Univer's bundle is large; raise Node's old-space ceiling so the
+          # `vite build` doesn't OOM on memory-constrained runners.
+          NODE_OPTIONS: --max-old-space-size=4096
         # --base=./ so the bundled /assets paths resolve under the /sheets/ mount
         # in the Tauri shell. main's `build` script omits --base by design (the
         # web deploy needs an absolute base for SPA sub-routes), so pass it here.
