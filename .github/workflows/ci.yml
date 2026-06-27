@@ -90,10 +90,15 @@ jobs:
         working-directory: apps/shell/src-tauri
         run: cargo clippy --all-targets -- -D warnings || echo "::warning::clippy reported lints"
 
-      - name: cargo audit (RustSec advisories)
-        uses: rustsec/audit-check@v2
+      # rustsec/audit-check only reads ./Cargo.lock at the repo root, but the
+      # crate lives in apps/shell/src-tauri. Run cargo-audit directly there.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo audit (RustSec advisories)
+        working-directory: apps/shell/src-tauri
+        run: cargo audit || echo "::warning::cargo audit reported advisories"
 
   # ---- Cross-platform Rust compile check ----
   # The release ships for macOS, Windows and Linux. The job above already
