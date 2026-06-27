@@ -52,9 +52,9 @@ goes straight to the start screen.
 | P1 | No thumbnails on recent file rows — Office shows the first page preview. Generating these from .docx / .xlsx is non-trivial (would need server-side rasterization on first open). |
 | P1 | No templates / "Create from template" — would need a template store + bundled defaults. |
 | P2 | Pinned and unpinned items share one list — Office Backstage separates them visually under "Pinned" and "Recent" headers. |
-| P2 | No keyboard navigation between recent rows (currently relies on Tab cycling through all `role=button`s). |
-| P2 | No filter by file type (docx-only / xlsx-only). |
-| P2 | Hero greeting doesn't change at midnight without a reload — refresh on document focus. |
+| ~~P2~~ ✅ | ~~No keyboard navigation between recent rows.~~ Shipped — arrow keys (Up/Down/Left/Right + Home/End) hop card-to-card, additive over Tab. |
+| ~~P2~~ ✅ | ~~No filter by file type (docx-only / xlsx-only).~~ Shipped — All / Documents / Spreadsheets tabs. |
+| ~~P2~~ ✅ | ~~Hero greeting doesn't change at midnight without a reload.~~ Shipped — re-renders on launcher focus / visibilitychange. |
 
 ## 3. Opening a document
 
@@ -128,9 +128,9 @@ versioning.
 | Sev | Item |
 |---|---|
 | P1 | **Save IPC still goes through `Array.from(Uint8Array)`** which JSON-serializes the byte array. For a 50 MB save this is slow / risky. The load path is chunked now; save needs the same treatment via a `write_document_chunk` Rust command. |
-| P1 | No auto-save / draft recovery on crash. Office writes `.tmp` and recovers on next launch. |
-| P2 | No file-format conversion offer ("Save as PDF", "Save as ODT"). |
-| P2 | Save success surfaces only inside the editor — could surface in the launcher's recent list (refresh ordering). |
+| ~~P1~~ ✅ | ~~No auto-save / draft recovery on crash.~~ Shipped — both editors debounce-write a per-file recovery sidecar (host-owned), clear it on a clean Save, and offer a Restore banner on open after a crash. Launcher also offers cross-window recovery at startup. |
+| P2 | No file-format conversion offer ("Save as ODT"). *(Save as PDF shipped via native print-to-PDF.)* |
+| ~~P2~~ ✅ | ~~Save success surfaces only inside the editor.~~ Shipped — the launcher re-pulls recents on focus, so a file saved in a doc window appears + reorders. |
 
 ## 6. Settings
 
@@ -184,6 +184,6 @@ Add-ins, Trust Center).
 - Recent file thumbnails
 - Templates
 - Print / print-preview
-- Auto-save + crash recovery
+- ~~Auto-save + crash recovery~~ ✅ shipped (per-file recovery sidecar in both editors + launcher offer)
 - Spelling check
 - Material Symbols subsetting

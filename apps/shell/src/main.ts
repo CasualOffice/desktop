@@ -1171,14 +1171,21 @@ function bindHomePanel() {
     });
   });
 
-  // Keep the hero greeting honest when the launcher regains focus after sitting
-  // idle across a time boundary (UX-AUDIT §2). Cheap — just re-reads the clock.
-  const refreshGreetingIfVisible = () => {
-    if (!$('workspace').hidden) renderGreeting();
+  // When the launcher regains focus, bring it up to date with what happened in
+  // the document windows while it was in the background:
+  //  - re-read the clock so a window left open across a time boundary updates
+  //    its greeting instead of going stale until a reload (UX-AUDIT §2);
+  //  - re-pull recents so a file just saved / opened in a doc window (which
+  //    calls add_recent_file out-of-process) shows up + reorders without a
+  //    manual refresh (UX-AUDIT §5).
+  const onLauncherFocus = () => {
+    if ($('workspace').hidden) return;
+    renderGreeting();
+    void refreshRecents();
   };
-  window.addEventListener('focus', refreshGreetingIfVisible);
+  window.addEventListener('focus', onLauncherFocus);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') refreshGreetingIfVisible();
+    if (document.visibilityState === 'visible') onLauncherFocus();
   });
 
   // Recent cards: arrow keys add a fast path to move focus between cards. The
