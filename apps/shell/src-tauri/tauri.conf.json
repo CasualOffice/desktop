@@ -51,6 +51,13 @@
         "role": "Editor"
       },
       {
+        "ext": ["odt"],
+        "name": "OpenDocument Text",
+        "description": "OpenDocument text document",
+        "mimeType": "application/vnd.oasis.opendocument.text",
+        "role": "Editor"
+      },
+      {
         "ext": ["txt"],
         "name": "Plain Text",
         "description": "Plain text document",

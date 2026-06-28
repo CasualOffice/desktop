@@ -1,14 +1,14 @@
-import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 // =============================================================================
 // Types
 // =============================================================================
 
-type DocKind = 'docx' | 'sheets';
+type DocKind = "docx" | "sheets";
 
 interface RecentFile {
   path: string;
@@ -27,11 +27,11 @@ interface Profile {
 }
 
 interface Settings {
-  theme: 'system' | 'light' | 'dark';
+  theme: "system" | "light" | "dark";
   default_save_dir: string | null;
   /** "ask" (show modal every time), "same", "new" — populated by the
    *  "Remember my choice" checkbox in the open-where dialog. */
-  open_window_preference?: 'ask' | 'same' | 'new';
+  open_window_preference?: "ask" | "same" | "new";
   /** Last app version the user saw the "What's new" modal for. */
   last_seen_version?: string | null;
   /** Privacy mode — see Rust-side struct docs. On Linux this is a
@@ -51,16 +51,20 @@ interface Settings {
  * on the first launch after the app's CARGO_PKG_VERSION moves past
  * `settings.last_seen_version`. Keep entries short and concrete.
  */
-const CHANGELOG: ReadonlyArray<{ version: string; title: string; highlights: string[] }> = [
+const CHANGELOG: ReadonlyArray<{
+  version: string;
+  title: string;
+  highlights: string[];
+}> = [
   {
-    version: '0.0.0',
-    title: 'Welcome to Casual Office',
+    version: "0.0.0",
+    title: "Welcome to Casual Office",
     highlights: [
-      'Edit Word (.docx), text (.txt, .md) and Excel (.xlsx, .ods, .csv, .tsv) files locally — nothing leaves your machine.',
-      'One native window per document — same speed and isolation as Excel or Word.',
-      'Save writes back to the original file; Save As always prompts for a new location.',
-      'Profile + settings with custom picture, theme, and default save folder.',
-      'Set Casual Office as the default app in your OS to open documents directly from the file manager.',
+      "Edit Word (.docx), text (.txt, .md) and Excel (.xlsx, .ods, .csv, .tsv) files locally — nothing leaves your machine.",
+      "One native window per document — same speed and isolation as Excel or Word.",
+      "Save writes back to the original file; Save As always prompts for a new location.",
+      "Profile + settings with custom picture, theme, and default save folder.",
+      "Set Casual Office as the default app in your OS to open documents directly from the file manager.",
     ],
   },
 ];
@@ -76,23 +80,26 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T {
 function escapeHtml(s: string): string {
   return s.replace(
     /[&<>"']/g,
-    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ]!,
   );
 }
 
 function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return i >= 0 ? p.slice(i + 1) : p;
 }
 
 function dirname(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(0, i) : '';
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i >= 0 ? p.slice(0, i) : "";
 }
 
 function relTime(epochSecs: number): string {
   const diff = Math.floor(Date.now() / 1000) - epochSecs;
-  if (diff < 60) return 'just now';
+  if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
@@ -101,29 +108,30 @@ function relTime(epochSecs: number): string {
 function kindFromPath(path: string): DocKind | null {
   const lower = path.toLowerCase();
   if (
-    lower.endsWith('.docx') ||
-    lower.endsWith('.txt') ||
-    lower.endsWith('.md') ||
-    lower.endsWith('.markdown')
+    lower.endsWith(".docx") ||
+    lower.endsWith(".odt") ||
+    lower.endsWith(".txt") ||
+    lower.endsWith(".md") ||
+    lower.endsWith(".markdown")
   )
-    return 'docx';
+    return "docx";
   if (
-    lower.endsWith('.xlsx') ||
-    lower.endsWith('.xlsm') ||
-    lower.endsWith('.ods') ||
-    lower.endsWith('.csv') ||
-    lower.endsWith('.tsv') ||
-    lower.endsWith('.tab') ||
-    lower.endsWith('.psv')
+    lower.endsWith(".xlsx") ||
+    lower.endsWith(".xlsm") ||
+    lower.endsWith(".ods") ||
+    lower.endsWith(".csv") ||
+    lower.endsWith(".tsv") ||
+    lower.endsWith(".tab") ||
+    lower.endsWith(".psv")
   ) {
-    return 'sheets';
+    return "sheets";
   }
   return null;
 }
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).slice(0, 2);
-  return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || '?';
+  return parts.map((p) => p[0]?.toUpperCase() ?? "").join("") || "?";
 }
 
 function hashHue(s: string): number {
@@ -136,7 +144,7 @@ function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function applyTheme(theme: Settings['theme']) {
+function applyTheme(theme: Settings["theme"]) {
   document.documentElement.dataset.theme = theme;
 }
 
@@ -145,7 +153,7 @@ function applyTheme(theme: Settings['theme']) {
  *  in the UA, so exclude it. Used to disable the privacy toggle there rather
  *  than letting the user flip a switch that protects nothing on their OS. */
 function isLinuxDesktop(): boolean {
-  if (typeof navigator === 'undefined') return false;
+  if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent;
   return /Linux/.test(ua) && !/Android/.test(ua);
 }
@@ -153,18 +161,20 @@ function isLinuxDesktop(): boolean {
 /** Push the new theme mode to every already-open document window so their
  *  editors switch live. Fire-and-forget; the launcher itself re-themes via
  *  the local applyTheme call. */
-function broadcastTheme(mode: Settings['theme']) {
-  invoke('broadcast_theme', { mode }).catch((err) => {
-    console.warn('broadcast_theme failed', err);
+function broadcastTheme(mode: Settings["theme"]) {
+  invoke("broadcast_theme", { mode }).catch((err) => {
+    console.warn("broadcast_theme failed", err);
   });
 }
 
 /** Mirror each radio's checked state onto its wrapping .theme-card's
  *  aria-checked, so the role="radio" labels expose correct state to AT. */
 function syncThemeCardAria() {
-  for (const card of document.querySelectorAll<HTMLElement>('.theme-card[role=radio]')) {
-    const input = card.querySelector<HTMLInputElement>('input[type=radio]');
-    card.setAttribute('aria-checked', input?.checked ? 'true' : 'false');
+  for (const card of document.querySelectorAll<HTMLElement>(
+    ".theme-card[role=radio]",
+  )) {
+    const input = card.querySelector<HTMLInputElement>("input[type=radio]");
+    card.setAttribute("aria-checked", input?.checked ? "true" : "false");
   }
 }
 
@@ -175,7 +185,7 @@ let statusClearTimer: ReturnType<typeof setTimeout> | null = null;
  *  for ephemeral "Opening …" / "Opened …" feedback so the line isn't dead
  *  UI. A persistent message (clearAfterMs = 0) is used for the boot error. */
 function setStatus(msg: string, clearAfterMs = 0) {
-  const el = document.getElementById('status');
+  const el = document.getElementById("status");
   if (!el) return;
   el.textContent = msg;
   if (statusClearTimer) {
@@ -184,7 +194,7 @@ function setStatus(msg: string, clearAfterMs = 0) {
   }
   if (clearAfterMs > 0) {
     statusClearTimer = setTimeout(() => {
-      el.textContent = '';
+      el.textContent = "";
       statusClearTimer = null;
     }, clearAfterMs);
   }
@@ -194,25 +204,25 @@ function setStatus(msg: string, clearAfterMs = 0) {
 // Toast — bottom-right transient notification. Auto-dismisses.
 // =============================================================================
 
-type ToastKind = 'default' | 'success' | 'error';
+type ToastKind = "default" | "success" | "error";
 
-function toast(message: string, kind: ToastKind = 'default', durationMs = 3000) {
-  const container = document.getElementById('toasts');
+function toast(
+  message: string,
+  kind: ToastKind = "default",
+  durationMs = 3000,
+) {
+  const container = document.getElementById("toasts");
   if (!container) return;
-  const el = document.createElement('div');
-  el.className = `toast${kind === 'default' ? '' : ` ${kind}`}`;
+  const el = document.createElement("div");
+  el.className = `toast${kind === "default" ? "" : ` ${kind}`}`;
   el.textContent = message;
   container.appendChild(el);
   const dismiss = () => {
-    el.classList.add('leaving');
-    el.addEventListener(
-      'animationend',
-      () => el.remove(),
-      { once: true },
-    );
+    el.classList.add("leaving");
+    el.addEventListener("animationend", () => el.remove(), { once: true });
   };
   setTimeout(dismiss, durationMs);
-  el.addEventListener('click', dismiss);
+  el.addEventListener("click", dismiss);
 }
 
 /**
@@ -225,19 +235,19 @@ function actionToast(
   message: string,
   actionLabel: string,
   onAction: () => void,
-  kind: ToastKind = 'default',
+  kind: ToastKind = "default",
   durationMs = 6000,
 ): { dismiss: () => void } {
-  const container = document.getElementById('toasts');
+  const container = document.getElementById("toasts");
   if (!container) return { dismiss: () => undefined };
-  const el = document.createElement('div');
-  el.className = `toast${kind === 'default' ? '' : ` ${kind}`}`;
-  const text = document.createElement('span');
-  text.className = 'toast-text';
+  const el = document.createElement("div");
+  el.className = `toast${kind === "default" ? "" : ` ${kind}`}`;
+  const text = document.createElement("span");
+  text.className = "toast-text";
   text.textContent = message;
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'toast-action';
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "toast-action";
   btn.textContent = actionLabel;
   el.appendChild(text);
   el.appendChild(btn);
@@ -246,18 +256,18 @@ function actionToast(
   const dismiss = () => {
     if (done) return;
     done = true;
-    el.classList.add('leaving');
-    el.addEventListener('animationend', () => el.remove(), { once: true });
+    el.classList.add("leaving");
+    el.addEventListener("animationend", () => el.remove(), { once: true });
   };
   const timer = setTimeout(dismiss, durationMs);
-  btn.addEventListener('click', (e) => {
+  btn.addEventListener("click", (e) => {
     e.stopPropagation();
     clearTimeout(timer);
     onAction();
     dismiss();
   });
   // Clicking the text (not the button) dismisses early.
-  text.addEventListener('click', () => {
+  text.addEventListener("click", () => {
     clearTimeout(timer);
     dismiss();
   });
@@ -271,24 +281,36 @@ function actionToast(
 // =============================================================================
 
 function friendlyError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err ?? '');
+  const raw = err instanceof Error ? err.message : String(err ?? "");
   const lower = raw.toLowerCase();
-  if (lower.includes('enoent') || lower.includes('no such file') || lower.includes('not found')) {
-    return 'the file no longer exists at that location.';
+  if (
+    lower.includes("enoent") ||
+    lower.includes("no such file") ||
+    lower.includes("not found")
+  ) {
+    return "the file no longer exists at that location.";
   }
-  if (lower.includes('eacces') || lower.includes('permission denied') || lower.includes('access is denied')) {
-    return 'permission was denied — check the file or folder permissions.';
+  if (
+    lower.includes("eacces") ||
+    lower.includes("permission denied") ||
+    lower.includes("access is denied")
+  ) {
+    return "permission was denied — check the file or folder permissions.";
   }
-  if (lower.includes('ebusy') || lower.includes('in use') || lower.includes('locked')) {
-    return 'the file is open in another program.';
+  if (
+    lower.includes("ebusy") ||
+    lower.includes("in use") ||
+    lower.includes("locked")
+  ) {
+    return "the file is open in another program.";
   }
-  if (lower.includes('enospc') || lower.includes('no space')) {
-    return 'there is not enough disk space.';
+  if (lower.includes("enospc") || lower.includes("no space")) {
+    return "there is not enough disk space.";
   }
-  if (lower.includes('timed out') || lower.includes('timeout')) {
-    return 'the operation timed out.';
+  if (lower.includes("timed out") || lower.includes("timeout")) {
+    return "the operation timed out.";
   }
-  return raw || 'an unexpected error occurred.';
+  return raw || "an unexpected error occurred.";
 }
 
 /** `Could not open "<name>": <friendly>` — used for open + save toasts. */
@@ -318,25 +340,26 @@ function fileErrorMessage(verb: string, label: string, err: unknown): string {
 async function preflightOpenError(path: string): Promise<string | null> {
   // 1. Existence.
   try {
-    const exists = await invoke<boolean>('file_exists', { path });
-    if (!exists) return 'the file no longer exists at that location.';
+    const exists = await invoke<boolean>("file_exists", { path });
+    if (!exists) return "the file no longer exists at that location.";
   } catch {
     return null; // fail-open: let the editor try.
   }
 
   // 2. ZIP magic for the OOXML / ODF container formats.
-  const ext = path.toLowerCase().split('.').pop() ?? '';
-  const zipBased = ext === 'docx' || ext === 'xlsx' || ext === 'xlsm' || ext === 'ods';
+  const ext = path.toLowerCase().split(".").pop() ?? "";
+  const zipBased =
+    ext === "docx" || ext === "xlsx" || ext === "xlsm" || ext === "ods";
   if (!zipBased) return null;
 
   try {
-    const head = await invoke<number[]>('read_document_chunk', {
+    const head = await invoke<number[]>("read_document_chunk", {
       path,
       offset: 0,
       length: 4,
     });
     // Empty file: nothing for the editor to parse — flag it now.
-    if (head.length === 0) return 'the file is empty.';
+    if (head.length === 0) return "the file is empty.";
     // A valid ZIP container starts with "PK\x03\x04" (local file header) or,
     // for an empty archive, "PK\x05\x06". Anything else with these extensions
     // is almost always a legacy OLE .doc/.xls renamed, or a corrupt file.
@@ -345,12 +368,15 @@ async function preflightOpenError(path: string): Promise<string | null> {
     const isEmptyArchive = isPk && head[2] === 0x05 && head[3] === 0x06;
     // OLE compound-file (old .doc/.xls) magic: D0 CF 11 E0.
     const isOle =
-      head[0] === 0xd0 && head[1] === 0xcf && head[2] === 0x11 && head[3] === 0xe0;
+      head[0] === 0xd0 &&
+      head[1] === 0xcf &&
+      head[2] === 0x11 &&
+      head[3] === 0xe0;
     if (isOle) {
-      return 'this looks like an older Office format (.doc/.xls), which isn’t supported — re-save it as .docx/.xlsx.';
+      return "this looks like an older Office format (.doc/.xls), which isn’t supported — re-save it as .docx/.xlsx.";
     }
     if (!isLocalHeader && !isEmptyArchive) {
-      return 'the file appears to be corrupt or isn’t a real Office document.';
+      return "the file appears to be corrupt or isn’t a real Office document.";
     }
   } catch {
     return null; // fail-open on a read hiccup.
@@ -368,12 +394,12 @@ async function preflightOpenError(path: string): Promise<string | null> {
  *  behind the backdrop. Call from the modal's keydown handler; no-op for
  *  non-Tab keys. */
 function trapTabKey(e: KeyboardEvent, container: HTMLElement): void {
-  if (e.key !== 'Tab') return;
+  if (e.key !== "Tab") return;
   const list = Array.from(
     container.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
     ),
-  ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+  ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
   if (list.length === 0) return;
   const first = list[0];
   const last = list[list.length - 1];
@@ -398,46 +424,48 @@ function confirmDialog(opts: {
 }): Promise<boolean> {
   return new Promise((resolve) => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
     backdrop.innerHTML = `
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
         <h2 id="confirm-title">${escapeHtml(opts.title)}</h2>
         <p class="sub">${escapeHtml(opts.body)}</p>
         <div class="modal-actions">
-          <button class="link" data-act="cancel" type="button">${escapeHtml(opts.cancelLabel ?? 'Cancel')}</button>
+          <button class="link" data-act="cancel" type="button">${escapeHtml(opts.cancelLabel ?? "Cancel")}</button>
           <span class="spacer"></span>
-          <button data-act="confirm" type="button"${opts.danger ? ' class="danger"' : ''}>${escapeHtml(opts.confirmLabel ?? 'Confirm')}</button>
+          <button data-act="confirm" type="button"${opts.danger ? ' class="danger"' : ""}>${escapeHtml(opts.confirmLabel ?? "Confirm")}</button>
         </div>
       </div>`;
     document.body.appendChild(backdrop);
-    const modalEl = backdrop.querySelector<HTMLElement>('.modal')!;
-    const confirmBtn = backdrop.querySelector<HTMLButtonElement>('[data-act=confirm]')!;
-    const cancelBtn = backdrop.querySelector<HTMLButtonElement>('[data-act=cancel]')!;
+    const modalEl = backdrop.querySelector<HTMLElement>(".modal")!;
+    const confirmBtn =
+      backdrop.querySelector<HTMLButtonElement>("[data-act=confirm]")!;
+    const cancelBtn =
+      backdrop.querySelector<HTMLButtonElement>("[data-act=cancel]")!;
     const finish = (result: boolean) => {
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener("keydown", onKey);
       backdrop.remove();
       previouslyFocused?.focus?.();
       resolve(result);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === "Escape") {
         e.preventDefault();
         finish(false);
-      } else if (e.key === 'Enter') {
+      } else if (e.key === "Enter") {
         e.preventDefault();
         finish(true);
       } else {
         trapTabKey(e, modalEl);
       }
     };
-    confirmBtn.addEventListener('click', () => finish(true));
-    cancelBtn.addEventListener('click', () => finish(false));
+    confirmBtn.addEventListener("click", () => finish(true));
+    cancelBtn.addEventListener("click", () => finish(false));
     // Backdrop click (outside the modal) cancels.
-    backdrop.addEventListener('mousedown', (e) => {
+    backdrop.addEventListener("mousedown", (e) => {
       if (e.target === backdrop) finish(false);
     });
-    window.addEventListener('keydown', onKey);
+    window.addEventListener("keydown", onKey);
     setTimeout(() => confirmBtn.focus(), 0);
   });
 }
@@ -450,7 +478,7 @@ function confirmDialog(opts: {
 function persistOrWarn(promise: Promise<unknown>, what: string) {
   promise.catch((err) => {
     console.error(`${what} failed to persist`, err);
-    toast(`${what} may not have been saved.`, 'error', 4000);
+    toast(`${what} may not have been saved.`, "error", 4000);
   });
 }
 
@@ -464,26 +492,26 @@ async function copyToClipboard(text: string) {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
-      toast('Path copied', 'success');
+      toast("Path copied", "success");
       return;
     }
   } catch (err) {
-    console.warn('navigator.clipboard.writeText failed; falling back', err);
+    console.warn("navigator.clipboard.writeText failed; falling back", err);
   }
   try {
-    const ta = document.createElement('textarea');
+    const ta = document.createElement("textarea");
     ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand('copy');
+    const ok = document.execCommand("copy");
     ta.remove();
-    toast(ok ? 'Path copied' : 'Couldn’t copy path', ok ? 'success' : 'error');
+    toast(ok ? "Path copied" : "Couldn’t copy path", ok ? "success" : "error");
   } catch (err) {
-    console.error('clipboard fallback failed', err);
-    toast('Couldn’t copy path', 'error');
+    console.error("clipboard fallback failed", err);
+    toast("Couldn’t copy path", "error");
   }
 }
 
@@ -493,7 +521,7 @@ async function copyToClipboard(text: string) {
 
 const state = {
   profile: null as Profile | null,
-  settings: { theme: 'system', default_save_dir: null } as Settings,
+  settings: { theme: "system", default_save_dir: null } as Settings,
 };
 
 function openOrReplaceLauncher(kind: DocKind, filePath: string | null) {
@@ -505,7 +533,7 @@ function openOrReplaceLauncher(kind: DocKind, filePath: string | null) {
     void preflightOpenError(filePath).then((reason) => {
       if (reason) {
         const label = basename(filePath);
-        toast(`Can’t open “${label}”: ${reason}`, 'error', 5500);
+        toast(`Can’t open “${label}”: ${reason}`, "error", 5500);
         setStatus(`Couldn’t open ${label}`, 4000);
         return;
       }
@@ -519,19 +547,19 @@ function openOrReplaceLauncher(kind: DocKind, filePath: string | null) {
 /** Route an open (already validated, if file-backed) through the user's
  *  open-where preference / dialog. */
 function proceedOpen(kind: DocKind, filePath: string | null) {
-  const pref = state.settings.open_window_preference ?? 'ask';
-  if (pref === 'same') return doOpen(kind, filePath, 'same');
-  if (pref === 'new') return doOpen(kind, filePath, 'new');
+  const pref = state.settings.open_window_preference ?? "ask";
+  if (pref === "same") return doOpen(kind, filePath, "same");
+  if (pref === "new") return doOpen(kind, filePath, "new");
   askOpenChoice(kind, filePath);
 }
 
-function doOpen(kind: DocKind, filePath: string | null, where: 'same' | 'new') {
+function doOpen(kind: DocKind, filePath: string | null, where: "same" | "new") {
   if (filePath) {
-    invoke('add_recent_file', { path: filePath }).catch(() => undefined);
+    invoke("add_recent_file", { path: filePath }).catch(() => undefined);
   }
-  if (where === 'same') {
-    const params = new URLSearchParams({ desk: '1' });
-    if (filePath) params.set('file', filePath);
+  if (where === "same") {
+    const params = new URLSearchParams({ desk: "1" });
+    if (filePath) params.set("file", filePath);
     // Navigate the launcher window to the editor. The user can use
     // Alt+Left / Cmd+[ to return to the home screen.
     window.location.href = `${kind}/index.html?${params.toString()}`;
@@ -539,19 +567,23 @@ function doOpen(kind: DocKind, filePath: string | null, where: 'same' | 'new') {
   }
   const label = filePath
     ? filePath.split(/[\\/]/).pop()
-    : kind === 'docx'
-      ? 'New document'
-      : 'New spreadsheet';
+    : kind === "docx"
+      ? "New document"
+      : "New spreadsheet";
   setStatus(`Opening ${label}…`);
-  invoke('open_document_window', { kind, filePath })
+  invoke("open_document_window", { kind, filePath })
     .then(() => {
       refreshRecents();
-      toast(`Opened ${label}`, 'success');
+      toast(`Opened ${label}`, "success");
       setStatus(`Opened ${label}`, 2500);
     })
     .catch((err) => {
-      console.error('open_document_window failed', err);
-      toast(fileErrorMessage('Could not open', label ?? 'document', err), 'error', 5000);
+      console.error("open_document_window failed", err);
+      toast(
+        fileErrorMessage("Could not open", label ?? "document", err),
+        "error",
+        5000,
+      );
       setStatus(`Couldn’t open ${label}`, 4000);
     });
 }
@@ -570,57 +602,67 @@ function handleDrop(paths: string[]) {
     if (kind) supported.push({ kind, path: p });
   }
   if (supported.length > 1) {
-    for (const { kind, path } of supported) doOpen(kind, path, 'new');
+    for (const { kind, path } of supported) doOpen(kind, path, "new");
   } else if (supported.length === 1) {
     openOrReplaceLauncher(supported[0].kind, supported[0].path);
   }
 }
 
 function askOpenChoice(kind: DocKind, filePath: string | null) {
-  const modal = $('open-choice');
-  const remember = $<HTMLInputElement>('open-choice-remember');
-  const sub = $('open-choice-sub');
-  const label = filePath ? filePath.split(/[\\/]/).pop() : kind === 'docx' ? 'New document' : 'New spreadsheet';
-  sub.textContent = label ? `Open “${label}” in:` : 'Open in:';
+  const modal = $("open-choice");
+  const remember = $<HTMLInputElement>("open-choice-remember");
+  const sub = $("open-choice-sub");
+  const label = filePath
+    ? filePath.split(/[\\/]/).pop()
+    : kind === "docx"
+      ? "New document"
+      : "New spreadsheet";
+  sub.textContent = label ? `Open “${label}” in:` : "Open in:";
   remember.checked = false;
   const previouslyFocused = document.activeElement as HTMLElement | null;
   modal.hidden = false;
   // Default focus on the primary action so Enter activates it.
-  setTimeout(() => $<HTMLButtonElement>('open-choice-same').focus(), 0);
+  setTimeout(() => $<HTMLButtonElement>("open-choice-same").focus(), 0);
 
-  const sameBtn = $<HTMLButtonElement>('open-choice-same');
-  const newBtn = $<HTMLButtonElement>('open-choice-new');
-  const cancelBtn = $<HTMLButtonElement>('open-choice-cancel');
+  const sameBtn = $<HTMLButtonElement>("open-choice-same");
+  const newBtn = $<HTMLButtonElement>("open-choice-new");
+  const cancelBtn = $<HTMLButtonElement>("open-choice-cancel");
   const cleanup = () => {
     modal.hidden = true;
-    sameBtn.removeEventListener('click', onSame);
-    newBtn.removeEventListener('click', onNew);
-    cancelBtn.removeEventListener('click', onCancel);
-    modal.removeEventListener('mousedown', onBackdrop);
-    window.removeEventListener('keydown', onKey);
+    sameBtn.removeEventListener("click", onSame);
+    newBtn.removeEventListener("click", onNew);
+    cancelBtn.removeEventListener("click", onCancel);
+    modal.removeEventListener("mousedown", onBackdrop);
+    window.removeEventListener("keydown", onKey);
     // Return focus to whatever opened the dialog.
     previouslyFocused?.focus?.();
   };
-  const persistIfRemembered = (choice: 'same' | 'new') => {
+  const persistIfRemembered = (choice: "same" | "new") => {
     if (remember.checked) {
-      const next: Settings = { ...state.settings, open_window_preference: choice };
+      const next: Settings = {
+        ...state.settings,
+        open_window_preference: choice,
+      };
       state.settings = next;
-      persistOrWarn(invoke('save_settings', { settings: next }), 'Window preference');
+      persistOrWarn(
+        invoke("save_settings", { settings: next }),
+        "Window preference",
+      );
     }
   };
   const onSame = () => {
-    persistIfRemembered('same');
+    persistIfRemembered("same");
     cleanup();
-    doOpen(kind, filePath, 'same');
+    doOpen(kind, filePath, "same");
   };
   const onNew = () => {
-    persistIfRemembered('new');
+    persistIfRemembered("new");
     cleanup();
-    doOpen(kind, filePath, 'new');
+    doOpen(kind, filePath, "new");
   };
   const onCancel = () => cleanup();
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
+    if (e.key === "Escape") {
       e.preventDefault();
       cleanup();
     } else {
@@ -631,11 +673,11 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
   const onBackdrop = (e: MouseEvent) => {
     if (e.target === modal) cleanup();
   };
-  sameBtn.addEventListener('click', onSame);
-  newBtn.addEventListener('click', onNew);
-  cancelBtn.addEventListener('click', onCancel);
-  modal.addEventListener('mousedown', onBackdrop);
-  window.addEventListener('keydown', onKey);
+  sameBtn.addEventListener("click", onSame);
+  newBtn.addEventListener("click", onNew);
+  cancelBtn.addEventListener("click", onCancel);
+  modal.addEventListener("mousedown", onBackdrop);
+  window.addEventListener("keydown", onKey);
 }
 
 // =============================================================================
@@ -645,11 +687,11 @@ function askOpenChoice(kind: DocKind, filePath: string | null) {
 /** Cache of the last-fetched recent list — used by the search filter to
  *  re-render without re-hitting Rust on every keystroke. */
 let lastRecentList: RecentFile[] = [];
-let recentSearchQuery = '';
-let recentTypeFilter: 'all' | 'docx' | 'sheets' = 'all';
+let recentSearchQuery = "";
+let recentTypeFilter: "all" | "docx" | "sheets" = "all";
 /** Tracks the recents fetch lifecycle so render can show a loading
  *  spinner or a distinct error state instead of the empty placeholder. */
-let recentsLoadState: 'idle' | 'loading' | 'error' = 'idle';
+let recentsLoadState: "idle" | "loading" | "error" = "idle";
 
 /** Paths whose recent card was clicked very recently. Used to debounce
  *  rapid double/triple-clicks so we don't queue several open commands for
@@ -661,32 +703,47 @@ const recentClickLock = new Set<string>();
 function groupKeyFor(epochSecs: number): string {
   const now = new Date();
   const then = new Date(epochSecs * 1000);
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfToday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
   const oneDay = 86400_000;
-  const diffDays = Math.floor((startOfToday - new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime()) / oneDay);
-  if (epochSecs * 1000 >= startOfToday) return 'today';
-  if (diffDays === 1) return 'yesterday';
-  if (diffDays <= 7) return 'this-week';
-  if (diffDays <= 30) return 'this-month';
-  return 'older';
+  const diffDays = Math.floor(
+    (startOfToday -
+      new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime()) /
+      oneDay,
+  );
+  if (epochSecs * 1000 >= startOfToday) return "today";
+  if (diffDays === 1) return "yesterday";
+  if (diffDays <= 7) return "this-week";
+  if (diffDays <= 30) return "this-month";
+  return "older";
 }
 
 const GROUP_LABELS: Record<string, string> = {
-  pinned: 'Pinned',
-  today: 'Today',
-  yesterday: 'Yesterday',
-  'this-week': 'Earlier this week',
-  'this-month': 'Earlier this month',
-  older: 'Older',
+  pinned: "Pinned",
+  today: "Today",
+  yesterday: "Yesterday",
+  "this-week": "Earlier this week",
+  "this-month": "Earlier this month",
+  older: "Older",
 };
 
-const GROUP_ORDER = ['pinned', 'today', 'yesterday', 'this-week', 'this-month', 'older'];
+const GROUP_ORDER = [
+  "pinned",
+  "today",
+  "yesterday",
+  "this-week",
+  "this-month",
+  "older",
+];
 
 /** Stylized file icon — a 40×52 "page" shape (blue for docx, green for
  *  xlsx) with simulated content lines / grid. Not a real thumbnail, but
  *  visually consistent with how Office's Backstage represents files. */
 function fileIconSvg(kind: DocKind): string {
-  if (kind === 'docx') {
+  if (kind === "docx") {
     return `
 <svg class="file-icon" viewBox="0 0 40 52" aria-hidden="true">
   <rect x="0.5" y="0.5" width="39" height="51" rx="3" ry="3" fill="#fff" stroke="#2563eb33"/>
@@ -717,52 +774,52 @@ function fileIconSvg(kind: DocKind): string {
  *  file extension so a .csv reads "CSV" rather than the generic
  *  "Spreadsheet". Falls back to the editor family for unknown cases. */
 function typeLabelFor(path: string, kind: DocKind): string {
-  const ext = path.toLowerCase().split('.').pop() ?? '';
+  const ext = path.toLowerCase().split(".").pop() ?? "";
   const byExt: Record<string, string> = {
-    docx: 'Word',
-    txt: 'Text',
-    md: 'Markdown',
-    markdown: 'Markdown',
-    xlsx: 'Excel',
-    xlsm: 'Excel',
-    ods: 'Calc',
-    csv: 'CSV',
-    tsv: 'TSV',
-    tab: 'TSV',
+    docx: "Word",
+    txt: "Text",
+    md: "Markdown",
+    markdown: "Markdown",
+    xlsx: "Excel",
+    xlsm: "Excel",
+    ods: "Calc",
+    csv: "CSV",
+    tsv: "TSV",
+    tab: "TSV",
   };
-  return byExt[ext] ?? (kind === 'docx' ? 'Document' : 'Spreadsheet');
+  return byExt[ext] ?? (kind === "docx" ? "Document" : "Spreadsheet");
 }
 
 async function refreshRecents() {
   // Only show the loading state when we have nothing to display yet —
   // a background refresh over an existing list shouldn't blank it out.
   if (lastRecentList.length === 0) {
-    recentsLoadState = 'loading';
+    recentsLoadState = "loading";
     renderRecents();
   }
   try {
-    lastRecentList = await invoke<RecentFile[]>('get_recent_files');
-    recentsLoadState = 'idle';
+    lastRecentList = await invoke<RecentFile[]>("get_recent_files");
+    recentsLoadState = "idle";
     renderRecents();
   } catch (err) {
-    console.error('refreshRecents failed', err);
-    recentsLoadState = 'error';
+    console.error("refreshRecents failed", err);
+    recentsLoadState = "error";
     renderRecents();
-    toast('Couldn’t load recent files.', 'error', 4000);
+    toast("Couldn’t load recent files.", "error", 4000);
   }
 }
 
 function renderRecents() {
-  const recent = $('recent');
-  const empty = $('empty');
-  const noMatch = $('recent-no-match');
-  const loading = $('recent-loading');
-  const errorEl = $('recent-error');
-  const groupsEl = $('recent-groups');
-  groupsEl.innerHTML = '';
+  const recent = $("recent");
+  const empty = $("empty");
+  const noMatch = $("recent-no-match");
+  const loading = $("recent-loading");
+  const errorEl = $("recent-error");
+  const groupsEl = $("recent-groups");
+  groupsEl.innerHTML = "";
 
   // Loading: nothing cached yet, fetch in flight.
-  if (recentsLoadState === 'loading') {
+  if (recentsLoadState === "loading") {
     recent.hidden = true;
     empty.hidden = true;
     loading.hidden = false;
@@ -772,7 +829,7 @@ function renderRecents() {
   loading.hidden = true;
 
   // Error: the fetch failed and we have nothing to show.
-  if (recentsLoadState === 'error' && lastRecentList.length === 0) {
+  if (recentsLoadState === "error" && lastRecentList.length === 0) {
     recent.hidden = true;
     empty.hidden = true;
     errorEl.hidden = false;
@@ -792,7 +849,7 @@ function renderRecents() {
   // Apply filters
   const q = recentSearchQuery.trim().toLowerCase();
   const matches = lastRecentList.filter((f) => {
-    if (recentTypeFilter !== 'all' && f.kind !== recentTypeFilter) return false;
+    if (recentTypeFilter !== "all" && f.kind !== recentTypeFilter) return false;
     if (q) {
       if (
         !f.path.toLowerCase().includes(q) &&
@@ -812,7 +869,7 @@ function renderRecents() {
   // Group: pinned files go in their own bucket regardless of recency.
   const groups = new Map<string, RecentFile[]>();
   for (const f of matches) {
-    const key = f.pinned ? 'pinned' : groupKeyFor(f.last_opened);
+    const key = f.pinned ? "pinned" : groupKeyFor(f.last_opened);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(f);
   }
@@ -820,26 +877,26 @@ function renderRecents() {
   for (const key of GROUP_ORDER) {
     const list = groups.get(key);
     if (!list || list.length === 0) continue;
-    const section = document.createElement('div');
-    section.className = 'recent-group';
+    const section = document.createElement("div");
+    section.className = "recent-group";
 
-    const heading = document.createElement('div');
-    heading.className = 'recent-group-head';
+    const heading = document.createElement("div");
+    heading.className = "recent-group-head";
     heading.innerHTML = `<h3>${escapeHtml(GROUP_LABELS[key] ?? key)}</h3><span class="recent-group-count">${list.length}</span>`;
     section.appendChild(heading);
 
-    const grid = document.createElement('div');
-    grid.className = 'recent-grid';
+    const grid = document.createElement("div");
+    grid.className = "recent-grid";
     for (const f of list) {
       // A relative wrapper so the "more actions" (⋯) button can sit in the
       // card's top-right corner — a <button> can't legally nest inside the
       // card <button>, so it's a sibling layered over it on hover/focus.
-      const wrap = document.createElement('div');
-      wrap.className = 'recent-card-wrap';
+      const wrap = document.createElement("div");
+      wrap.className = "recent-card-wrap";
 
-      const card = document.createElement('button');
-      card.type = 'button';
-      card.className = `recent-card${f.pinned ? ' pinned' : ''}`;
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = `recent-card${f.pinned ? " pinned" : ""}`;
       card.title = f.path;
       // The directory path is selectable so a user can copy it directly;
       // the "Copy path" context-menu item covers the whole path.
@@ -847,7 +904,7 @@ function renderRecents() {
         ${fileIconSvg(f.kind)}
         <div class="recent-card-meta">
           <div class="recent-card-name">
-            ${f.pinned ? '<span class="pin-mark" aria-label="Pinned">★</span>' : ''}
+            ${f.pinned ? '<span class="pin-mark" aria-label="Pinned">★</span>' : ""}
             ${escapeHtml(basename(f.path))}
           </div>
           <div class="recent-card-path">${escapeHtml(dirname(f.path))}</div>
@@ -857,8 +914,8 @@ function renderRecents() {
           </div>
         </div>
       `;
-      card.addEventListener('click', () => openRecent(f));
-      card.addEventListener('contextmenu', (e) => {
+      card.addEventListener("click", () => openRecent(f));
+      card.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         openRecentContextMenu(f, e.clientX, e.clientY);
       });
@@ -866,13 +923,13 @@ function renderRecents() {
       // "More actions" affordance — visible on card hover/focus, always
       // reachable by keyboard. Opens the same context menu as right-click,
       // anchored under the button.
-      const more = document.createElement('button');
-      more.type = 'button';
-      more.className = 'recent-card-more';
-      more.setAttribute('aria-label', `More actions for ${basename(f.path)}`);
-      more.title = 'More actions';
-      more.textContent = '⋯';
-      more.addEventListener('click', (e) => {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "recent-card-more";
+      more.setAttribute("aria-label", `More actions for ${basename(f.path)}`);
+      more.title = "More actions";
+      more.textContent = "⋯";
+      more.addEventListener("click", (e) => {
         e.stopPropagation();
         const r = more.getBoundingClientRect();
         openRecentContextMenu(f, r.left, r.bottom + 2);
@@ -894,65 +951,77 @@ function renderRecents() {
  */
 function openRecentContextMenu(f: RecentFile, x: number, y: number) {
   closeAnyContextMenu();
-  const menu = document.createElement('div');
-  menu.className = 'context-menu';
-  menu.setAttribute('role', 'menu');
-  const items: Array<{ label: string; run: () => void; primary?: boolean; divider?: boolean }> = [
-    { label: 'Open', run: () => openRecent(f), primary: true },
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  menu.setAttribute("role", "menu");
+  const items: Array<{
+    label: string;
+    run: () => void;
+    primary?: boolean;
+    divider?: boolean;
+  }> = [
+    { label: "Open", run: () => openRecent(f), primary: true },
     {
-      label: 'Open in new window',
+      label: "Open in new window",
       run: async () => {
         // Same launcher-side pre-flight as the normal open path so a
         // missing/corrupt file is caught before a window is spawned.
         const reason = await preflightOpenError(f.path);
         if (reason) {
-          toast(`Can’t open “${basename(f.path)}”: ${reason}`, 'error', 5500);
+          toast(`Can’t open “${basename(f.path)}”: ${reason}`, "error", 5500);
           return;
         }
-        invoke('add_recent_file', { path: f.path }).catch(() => undefined);
-        invoke('open_document_window', { kind: f.kind, filePath: f.path })
-          .then(() => toast(`Opened ${basename(f.path)}`, 'success'))
+        invoke("add_recent_file", { path: f.path }).catch(() => undefined);
+        invoke("open_document_window", { kind: f.kind, filePath: f.path })
+          .then(() => toast(`Opened ${basename(f.path)}`, "success"))
           .catch((err) =>
-            toast(fileErrorMessage('Could not open', basename(f.path), err), 'error', 4500),
+            toast(
+              fileErrorMessage("Could not open", basename(f.path), err),
+              "error",
+              4500,
+            ),
           );
       },
     },
     {
-      label: f.pinned ? 'Unpin from top' : 'Pin to top',
+      label: f.pinned ? "Unpin from top" : "Pin to top",
       run: async () => {
         try {
-          await invoke('set_recent_pinned', { path: f.path, pinned: !f.pinned });
-          toast(f.pinned ? 'Unpinned' : 'Pinned to top');
+          await invoke("set_recent_pinned", {
+            path: f.path,
+            pinned: !f.pinned,
+          });
+          toast(f.pinned ? "Unpinned" : "Pinned to top");
         } catch (err) {
-          toast(`Could not update pin: ${err}`, 'error', 4500);
+          toast(`Could not update pin: ${err}`, "error", 4500);
         }
         await refreshRecents();
       },
     },
     {
-      label: 'Show in folder',
+      label: "Show in folder",
       run: () => {
-        invoke('reveal_in_folder', { path: f.path }).catch((err) => {
-          toast(`Could not open folder: ${err}`, 'error', 4500);
+        invoke("reveal_in_folder", { path: f.path }).catch((err) => {
+          toast(`Could not open folder: ${err}`, "error", 4500);
         });
       },
     },
     {
-      label: 'Copy path',
+      label: "Copy path",
       run: () => copyToClipboard(f.path),
     },
     {
-      label: 'Remove from recents',
+      label: "Remove from recents",
       run: () => removeRecentWithUndo(f),
     },
   ];
   for (const item of items) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'context-menu-item';
-    btn.setAttribute('role', 'menuitem');
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "context-menu-item";
+    btn.setAttribute("role", "menuitem");
     btn.textContent = item.label;
-    btn.addEventListener('click', () => {
+    btn.addEventListener("click", () => {
       item.run();
       closeAnyContextMenu();
     });
@@ -966,50 +1035,58 @@ function openRecentContextMenu(f: RecentFile, x: number, y: number) {
   menu.style.left = `${Math.min(x, maxLeft)}px`;
   menu.style.top = `${Math.min(y, maxTop)}px`;
   // Focus the first menu item so Enter activates the primary action.
-  setTimeout(() => menu.querySelector<HTMLButtonElement>('.context-menu-item')?.focus(), 0);
+  setTimeout(
+    () => menu.querySelector<HTMLButtonElement>(".context-menu-item")?.focus(),
+    0,
+  );
 
   const dismiss = (e?: Event) => {
     if (e && menu.contains(e.target as Node)) return;
     closeAnyContextMenu();
   };
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
+    if (e.key === "Escape") {
       e.preventDefault();
       closeAnyContextMenu();
       return;
     }
     // Up/Down (and Home/End) move focus between items, per the role="menu"
     // pattern; otherwise the declared role implies keyboard nav it doesn't have.
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
-    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('.context-menu-item'));
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const items = Array.from(
+      menu.querySelectorAll<HTMLButtonElement>(".context-menu-item"),
+    );
     if (items.length === 0) return;
     e.preventDefault();
     const cur = items.indexOf(document.activeElement as HTMLButtonElement);
     let next: number;
-    if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = items.length - 1;
-    else if (e.key === 'ArrowDown') next = cur < 0 ? 0 : (cur + 1) % items.length;
-    else next = cur < 0 ? items.length - 1 : (cur - 1 + items.length) % items.length;
+    if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else if (e.key === "ArrowDown")
+      next = cur < 0 ? 0 : (cur + 1) % items.length;
+    else
+      next =
+        cur < 0 ? items.length - 1 : (cur - 1 + items.length) % items.length;
     items[next].focus();
   };
   // Escape can attach immediately — the opening event is a mouse event, not a
   // keydown, so there's no self-close race. Only the mousedown `dismiss` must
   // be deferred one frame so the contextmenu/mousedown that opened us doesn't
   // instantly close it.
-  window.addEventListener('keydown', onKey);
+  window.addEventListener("keydown", onKey);
   setTimeout(() => {
-    window.addEventListener('mousedown', dismiss);
+    window.addEventListener("mousedown", dismiss);
   }, 0);
   // Stash cleanup on the element so closeAnyContextMenu can run it.
   (menu as HTMLElement & { __cleanup?: () => void }).__cleanup = () => {
-    window.removeEventListener('mousedown', dismiss);
-    window.removeEventListener('keydown', onKey);
+    window.removeEventListener("mousedown", dismiss);
+    window.removeEventListener("keydown", onKey);
     menu.remove();
   };
 }
 
 function closeAnyContextMenu() {
-  for (const el of document.querySelectorAll<HTMLElement>('.context-menu')) {
+  for (const el of document.querySelectorAll<HTMLElement>(".context-menu")) {
     (el as HTMLElement & { __cleanup?: () => void }).__cleanup?.();
   }
 }
@@ -1021,29 +1098,32 @@ function closeAnyContextMenu() {
  */
 async function removeRecentWithUndo(f: RecentFile) {
   try {
-    await invoke('remove_recent_file', { path: f.path });
+    await invoke("remove_recent_file", { path: f.path });
   } catch (err) {
-    console.error('remove_recent_file failed', err);
-    toast(`Couldn’t remove “${basename(f.path)}”.`, 'error', 4000);
+    console.error("remove_recent_file failed", err);
+    toast(`Couldn’t remove “${basename(f.path)}”.`, "error", 4000);
     return;
   }
   await refreshRecents();
   actionToast(
     `Removed “${basename(f.path)}”.`,
-    'Undo',
+    "Undo",
     async () => {
       try {
-        await invoke('add_recent_file', { path: f.path });
+        await invoke("add_recent_file", { path: f.path });
         if (f.pinned) {
-          await invoke('set_recent_pinned', { path: f.path, pinned: true }).catch(() => undefined);
+          await invoke("set_recent_pinned", {
+            path: f.path,
+            pinned: true,
+          }).catch(() => undefined);
         }
       } catch (err) {
-        console.error('undo remove failed', err);
-        toast(`Couldn’t restore “${basename(f.path)}”.`, 'error', 4000);
+        console.error("undo remove failed", err);
+        toast(`Couldn’t restore “${basename(f.path)}”.`, "error", 4000);
       }
       await refreshRecents();
     },
-    'default',
+    "default",
     6000,
   );
 }
@@ -1065,14 +1145,18 @@ async function openRecent(f: RecentFile) {
 
   let exists = true;
   try {
-    exists = await invoke<boolean>('file_exists', { path: f.path });
+    exists = await invoke<boolean>("file_exists", { path: f.path });
   } catch {
     /* if the check itself fails, fall through and let the editor decide */
   }
   if (!exists) {
-    toast(`Couldn't find ${basename(f.path)} — removed from recents.`, 'error', 4500);
+    toast(
+      `Couldn't find ${basename(f.path)} — removed from recents.`,
+      "error",
+      4500,
+    );
     try {
-      await invoke('remove_recent_file', { path: f.path });
+      await invoke("remove_recent_file", { path: f.path });
     } catch {
       /* best-effort */
     }
@@ -1083,61 +1167,76 @@ async function openRecent(f: RecentFile) {
 }
 
 function bindHomePanel() {
-  $('open-file').addEventListener('click', async () => {
+  $("open-file").addEventListener("click", async () => {
     const selected = await open({
       multiple: false,
       directory: false,
       filters: [
         {
-          name: 'All supported',
-          extensions: ['docx', 'txt', 'md', 'markdown', 'xlsx', 'xlsm', 'ods', 'csv', 'tsv', 'tab'],
+          name: "All supported",
+          extensions: [
+            "docx",
+            "txt",
+            "md",
+            "markdown",
+            "xlsx",
+            "xlsm",
+            "ods",
+            "csv",
+            "tsv",
+            "tab",
+          ],
         },
-        { name: 'Word document', extensions: ['docx'] },
-        { name: 'Text', extensions: ['txt', 'md', 'markdown'] },
-        { name: 'Spreadsheet', extensions: ['xlsx', 'xlsm', 'ods'] },
-        { name: 'Delimited', extensions: ['csv', 'tsv', 'tab'] },
+        { name: "Word document", extensions: ["docx"] },
+        { name: "Text", extensions: ["txt", "md", "markdown"] },
+        { name: "Spreadsheet", extensions: ["xlsx", "xlsm", "ods"] },
+        { name: "Delimited", extensions: ["csv", "tsv", "tab"] },
       ],
     });
-    if (!selected || typeof selected !== 'string') return;
+    if (!selected || typeof selected !== "string") return;
     const kind = kindFromPath(selected);
     if (!kind) {
-      toast(`Unsupported file: ${basename(selected)}`, 'error', 4000);
+      toast(`Unsupported file: ${basename(selected)}`, "error", 4000);
       return;
     }
     openOrReplaceLauncher(kind, selected);
   });
 
-  $('new-docx').addEventListener('click', () => openOrReplaceLauncher('docx', null));
-  $('new-sheets').addEventListener('click', () => openOrReplaceLauncher('sheets', null));
+  $("new-docx").addEventListener("click", () =>
+    openOrReplaceLauncher("docx", null),
+  );
+  $("new-sheets").addEventListener("click", () =>
+    openOrReplaceLauncher("sheets", null),
+  );
 
-  $('clear-recents').addEventListener('click', async () => {
+  $("clear-recents").addEventListener("click", async () => {
     const ok = await confirmDialog({
-      title: 'Clear all recent files?',
-      body: 'This removes every entry from your recent files list, including pinned ones. The files themselves are not deleted. This can’t be undone.',
-      confirmLabel: 'Clear all',
-      cancelLabel: 'Keep them',
+      title: "Clear all recent files?",
+      body: "This removes every entry from your recent files list, including pinned ones. The files themselves are not deleted. This can’t be undone.",
+      confirmLabel: "Clear all",
+      cancelLabel: "Keep them",
       danger: true,
     });
     if (!ok) return;
     try {
-      await invoke('clear_recent_files');
+      await invoke("clear_recent_files");
       await refreshRecents();
-      toast('Recent files cleared');
+      toast("Recent files cleared");
     } catch (err) {
-      console.error('clear_recent_files failed', err);
-      toast('Couldn’t clear recent files.', 'error', 4000);
+      console.error("clear_recent_files failed", err);
+      toast("Couldn’t clear recent files.", "error", 4000);
     }
   });
 
   // Retry button in the recents error state.
-  $('recent-retry').addEventListener('click', () => {
+  $("recent-retry").addEventListener("click", () => {
     refreshRecents();
   });
 
   // Filter recent files as the user types — pure client-side over the
   // cached list, no Rust round-trips.
-  const search = $<HTMLInputElement>('recent-search');
-  search.addEventListener('input', () => {
+  const search = $<HTMLInputElement>("recent-search");
+  search.addEventListener("input", () => {
     recentSearchQuery = search.value;
     renderRecents();
   });
@@ -1146,29 +1245,32 @@ function bindHomePanel() {
   // role="tab" in a role="tablist": keep aria-selected in sync, use a roving
   // tabindex (only the active tab is Tab-reachable), and support the WAI-ARIA
   // arrow-key navigation the roles imply.
-  const filterBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('.filter-btn'));
+  const filterBtns = Array.from(
+    document.querySelectorAll<HTMLButtonElement>(".filter-btn"),
+  );
   const activateFilter = (btn: HTMLButtonElement) => {
     for (const other of filterBtns) {
-      other.classList.remove('active');
-      other.setAttribute('aria-selected', 'false');
+      other.classList.remove("active");
+      other.setAttribute("aria-selected", "false");
       other.tabIndex = -1;
     }
-    btn.classList.add('active');
-    btn.setAttribute('aria-selected', 'true');
+    btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
     btn.tabIndex = 0;
-    recentTypeFilter = (btn.dataset.filter as typeof recentTypeFilter) ?? 'all';
+    recentTypeFilter = (btn.dataset.filter as typeof recentTypeFilter) ?? "all";
     renderRecents();
   };
   filterBtns.forEach((btn, i) => {
-    btn.tabIndex = btn.classList.contains('active') ? 0 : -1;
-    btn.addEventListener('click', () => activateFilter(btn));
-    btn.addEventListener('keydown', (e) => {
+    btn.tabIndex = btn.classList.contains("active") ? 0 : -1;
+    btn.addEventListener("click", () => activateFilter(btn));
+    btn.addEventListener("keydown", (e) => {
       let next = -1;
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % filterBtns.length;
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp')
+      if (e.key === "ArrowRight" || e.key === "ArrowDown")
+        next = (i + 1) % filterBtns.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
         next = (i - 1 + filterBtns.length) % filterBtns.length;
-      else if (e.key === 'Home') next = 0;
-      else if (e.key === 'End') next = filterBtns.length - 1;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = filterBtns.length - 1;
       else return;
       e.preventDefault();
       const target = filterBtns[next];
@@ -1185,13 +1287,13 @@ function bindHomePanel() {
   //    calls add_recent_file out-of-process) shows up + reorders without a
   //    manual refresh (UX-AUDIT §5).
   const onLauncherFocus = () => {
-    if ($('workspace').hidden) return;
+    if ($("workspace").hidden) return;
     renderGreeting();
     void refreshRecents();
   };
-  window.addEventListener('focus', onLauncherFocus);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') onLauncherFocus();
+  window.addEventListener("focus", onLauncherFocus);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") onLauncherFocus();
   });
 
   // Recent cards: arrow keys add a fast path to move focus between cards. The
@@ -1200,20 +1302,33 @@ function bindHomePanel() {
   // /End simply hop card-to-card. Delegated on the container so it survives the
   // frequent renderRecents() re-renders. Ignored when focus is on the ⋯ button
   // (a sibling of the card, not a descendant) so its own behaviour is untouched.
-  const groupsEl = $('recent-groups');
-  groupsEl.addEventListener('keydown', (e) => {
-    const card = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('.recent-card');
+  const groupsEl = $("recent-groups");
+  groupsEl.addEventListener("keydown", (e) => {
+    const card = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>(
+      ".recent-card",
+    );
     if (!card) return;
-    const nav = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    const nav = [
+      "ArrowDown",
+      "ArrowUp",
+      "ArrowLeft",
+      "ArrowRight",
+      "Home",
+      "End",
+    ];
     if (!nav.includes(e.key)) return;
-    const cards = Array.from(groupsEl.querySelectorAll<HTMLButtonElement>('.recent-card'));
+    const cards = Array.from(
+      groupsEl.querySelectorAll<HTMLButtonElement>(".recent-card"),
+    );
     const cur = cards.indexOf(card);
     if (cur < 0) return;
     let next = cur;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = (cur + 1) % cards.length;
-    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') next = (cur - 1 + cards.length) % cards.length;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = cards.length - 1;
+    if (e.key === "ArrowDown" || e.key === "ArrowRight")
+      next = (cur + 1) % cards.length;
+    else if (e.key === "ArrowUp" || e.key === "ArrowLeft")
+      next = (cur - 1 + cards.length) % cards.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = cards.length - 1;
     e.preventDefault();
     cards[next]?.focus();
   });
@@ -1229,9 +1344,9 @@ async function bindDragDrop() {
   // when at least one supported file is actually being dragged.
   let dragActive = false;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
-  const overlay = $('drop-overlay');
-  const title = $('drop-title');
-  const sub = $('drop-sub');
+  const overlay = $("drop-overlay");
+  const title = $("drop-title");
+  const sub = $("drop-sub");
 
   // Long safety-net timeout: the overlay is normally dismissed by an
   // actual 'leave' or 'drop' event. The timer is only a last resort for
@@ -1250,11 +1365,11 @@ async function bindDragDrop() {
     dragActive = true;
     overlay.hidden = false;
     const n = supported.length;
-    title.textContent = n === 1 ? 'Drop to open' : `Drop to open ${n} files`;
+    title.textContent = n === 1 ? "Drop to open" : `Drop to open ${n} files`;
     sub.textContent = supported
       .slice(0, 3)
       .map((p) => p.split(/[\\/]/).pop())
-      .join(' · ');
+      .join(" · ");
     armSafetyTimer();
   };
   const hideOverlay = () => {
@@ -1269,8 +1384,9 @@ async function bindDragDrop() {
   // Test hook (dev builds only): Tauri's drag-drop event bus isn't available in
   // the Playwright harness, so expose the handler to drive it synthetically.
   if (import.meta.env.DEV) {
-    (window as unknown as { __deskApp_handleDrop?: (paths: string[]) => void }).__deskApp_handleDrop =
-      handleDrop;
+    (
+      window as unknown as { __deskApp_handleDrop?: (paths: string[]) => void }
+    ).__deskApp_handleDrop = handleDrop;
   }
 
   try {
@@ -1278,24 +1394,24 @@ async function bindDragDrop() {
       const t = (payload as { type?: string }).type;
       const paths = (payload as { paths?: string[] }).paths ?? [];
       // Don't accept anything while the first-run wizard is up.
-      if (!$('wizard').hidden) return;
+      if (!$("wizard").hidden) return;
 
-      if (t === 'enter') {
+      if (t === "enter") {
         const supported = paths.filter((p) => kindFromPath(p));
         if (supported.length > 0) showOverlay(supported);
-      } else if (t === 'over') {
+      } else if (t === "over") {
         // Keep the overlay alive while we're being hovered — push the
         // safety timer back out so an ongoing drag never trips it.
         if (dragActive) armSafetyTimer();
-      } else if (t === 'leave') {
+      } else if (t === "leave") {
         hideOverlay();
-      } else if (t === 'drop') {
+      } else if (t === "drop") {
         hideOverlay();
         handleDrop(paths);
       }
     });
   } catch (err) {
-    console.warn('drag-drop binding failed (non-Tauri context?)', err);
+    console.warn("drag-drop binding failed (non-Tauri context?)", err);
   }
 }
 
@@ -1304,29 +1420,29 @@ async function bindDragDrop() {
 // =============================================================================
 
 function bindShortcuts() {
-  window.addEventListener('keydown', (e) => {
+  window.addEventListener("keydown", (e) => {
     const meta = e.ctrlKey || e.metaKey;
     if (!meta) return;
     const key = e.key.toLowerCase();
     // Ctrl/Cmd-O — Open file dialog
-    if (key === 'o' && !e.shiftKey) {
+    if (key === "o" && !e.shiftKey) {
       e.preventDefault();
-      $('open-file').click();
+      $("open-file").click();
     }
     // Ctrl/Cmd-N — New document (.docx)
-    if (key === 'n' && !e.shiftKey) {
+    if (key === "n" && !e.shiftKey) {
       e.preventDefault();
-      $('new-docx').click();
+      $("new-docx").click();
     }
     // Ctrl/Cmd-Shift-N — New spreadsheet (.xlsx)
-    if (key === 'n' && e.shiftKey) {
+    if (key === "n" && e.shiftKey) {
       e.preventDefault();
-      $('new-sheets').click();
+      $("new-sheets").click();
     }
     // Ctrl/Cmd-, — Settings (industry standard)
-    if (key === ',') {
+    if (key === ",") {
       e.preventDefault();
-      if ($('settings-panel').hidden) showSettings();
+      if ($("settings-panel").hidden) showSettings();
       else hideSettings();
     }
   });
@@ -1341,24 +1457,24 @@ type WizardState = {
   name: string;
   email: string;
   timezone: string;
-  theme: Settings['theme'];
+  theme: Settings["theme"];
   dir: string | null;
 };
 
 const wiz: WizardState = {
   step: 1,
-  name: '',
-  email: '',
+  name: "",
+  email: "",
   timezone: detectTimezone(),
-  theme: 'system',
+  theme: "system",
   dir: null,
 };
 
 function detectTimezone(): string {
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
   } catch {
-    return '';
+    return "";
   }
 }
 
@@ -1367,7 +1483,7 @@ function detectTimezone(): string {
  *  optional). Not RFC-5322 strict on purpose. */
 function isPlausibleEmail(value: string): boolean {
   const v = value.trim();
-  if (v === '') return true;
+  if (v === "") return true;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
@@ -1376,7 +1492,7 @@ function isPlausibleEmail(value: string): boolean {
  *  nonsense before persisting. */
 function isKnownTimezone(tz: string): boolean {
   const v = tz.trim();
-  if (v === '') return true;
+  if (v === "") return true;
   return supportedTimezones().includes(v);
 }
 
@@ -1389,19 +1505,27 @@ function isKnownTimezone(tz: string): boolean {
  */
 async function warnIfFolderUnusable(dir: string) {
   try {
-    const { stat } = await import('@tauri-apps/plugin-fs');
+    const { stat } = await import("@tauri-apps/plugin-fs");
     const info = await stat(dir);
     if (!info.isDirectory) {
-      toast('That default save folder isn’t a folder — saves there may fail.', 'error', 5000);
+      toast(
+        "That default save folder isn’t a folder — saves there may fail.",
+        "error",
+        5000,
+      );
     }
   } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err ?? '');
+    const raw = err instanceof Error ? err.message : String(err ?? "");
     // A "not found" error is actionable; permission/scope errors are not,
     // so only warn when the path genuinely doesn't resolve.
     if (/not found|no such file|enoent/i.test(raw)) {
-      toast('That default save folder doesn’t exist — saves there may fail.', 'error', 5000);
+      toast(
+        "That default save folder doesn’t exist — saves there may fail.",
+        "error",
+        5000,
+      );
     } else {
-      console.warn('default-folder check skipped', err);
+      console.warn("default-folder check skipped", err);
     }
   }
 }
@@ -1414,20 +1538,24 @@ function setFieldError(errorElId: string, message: string | null) {
     el.textContent = message;
     el.hidden = false;
   } else {
-    el.textContent = '';
+    el.textContent = "";
     el.hidden = true;
   }
 }
 
 /** sessionStorage key for the in-progress wizard draft, so a mid-flow
  *  window close doesn't lose typed input. Cleared once setup completes. */
-const WIZARD_DRAFT_KEY = 'casualoffice.wizard.draft';
+const WIZARD_DRAFT_KEY = "casualoffice.wizard.draft";
 
 function saveWizardDraft() {
   try {
     sessionStorage.setItem(
       WIZARD_DRAFT_KEY,
-      JSON.stringify({ name: wiz.name, email: wiz.email, timezone: wiz.timezone }),
+      JSON.stringify({
+        name: wiz.name,
+        email: wiz.email,
+        timezone: wiz.timezone,
+      }),
     );
   } catch {
     /* sessionStorage may be unavailable; non-fatal */
@@ -1442,12 +1570,24 @@ function clearWizardDraft() {
   }
 }
 
-function loadWizardDraft(): { name: string; email: string; timezone: string } | null {
+function loadWizardDraft(): {
+  name: string;
+  email: string;
+  timezone: string;
+} | null {
   try {
     const raw = sessionStorage.getItem(WIZARD_DRAFT_KEY);
     if (!raw) return null;
-    const d = JSON.parse(raw) as { name?: string; email?: string; timezone?: string };
-    return { name: d.name ?? '', email: d.email ?? '', timezone: d.timezone ?? '' };
+    const d = JSON.parse(raw) as {
+      name?: string;
+      email?: string;
+      timezone?: string;
+    };
+    return {
+      name: d.name ?? "",
+      email: d.email ?? "",
+      timezone: d.timezone ?? "",
+    };
   } catch {
     return null;
   }
@@ -1458,32 +1598,50 @@ function loadWizardDraft(): { name: string; email: string; timezone: string } | 
 function supportedTimezones(): string[] {
   try {
     // Modern engines (WebKitGTK 2.40+, Chromium 99+, Firefox 93+).
-    const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
-    if (typeof intl.supportedValuesOf === 'function') {
-      return intl.supportedValuesOf('timeZone');
+    const intl = Intl as unknown as {
+      supportedValuesOf?: (key: string) => string[];
+    };
+    if (typeof intl.supportedValuesOf === "function") {
+      return intl.supportedValuesOf("timeZone");
     }
   } catch {
     /* fall through */
   }
   return [
-    'UTC',
-    'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York',
-    'America/Toronto', 'America/Mexico_City', 'America/Sao_Paulo',
-    'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
-    'Africa/Cairo', 'Africa/Johannesburg',
-    'Asia/Dubai', 'Asia/Karachi', 'Asia/Kolkata', 'Asia/Bangkok',
-    'Asia/Singapore', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Seoul',
-    'Australia/Sydney', 'Pacific/Auckland',
+    "UTC",
+    "America/Los_Angeles",
+    "America/Denver",
+    "America/Chicago",
+    "America/New_York",
+    "America/Toronto",
+    "America/Mexico_City",
+    "America/Sao_Paulo",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Europe/Moscow",
+    "Africa/Cairo",
+    "Africa/Johannesburg",
+    "Asia/Dubai",
+    "Asia/Karachi",
+    "Asia/Kolkata",
+    "Asia/Bangkok",
+    "Asia/Singapore",
+    "Asia/Shanghai",
+    "Asia/Tokyo",
+    "Asia/Seoul",
+    "Australia/Sydney",
+    "Pacific/Auckland",
   ];
 }
 
 function populateTimezoneDatalist() {
-  const list = document.getElementById('tz-list');
+  const list = document.getElementById("tz-list");
   if (!list) return;
   // Built once on boot; the option set is fixed for the runtime.
   if (list.children.length > 0) return;
   for (const tz of supportedTimezones()) {
-    const opt = document.createElement('option');
+    const opt = document.createElement("option");
     opt.value = tz;
     list.appendChild(opt);
   }
@@ -1491,18 +1649,18 @@ function populateTimezoneDatalist() {
 
 function showWizardStep(n: 1 | 2 | 3) {
   wiz.step = n;
-  for (const s of document.querySelectorAll<HTMLElement>('.wiz-step')) {
+  for (const s of document.querySelectorAll<HTMLElement>(".wiz-step")) {
     s.hidden = Number(s.dataset.step) !== n;
   }
-  const prog = document.querySelector<HTMLElement>('.wiz-progress');
+  const prog = document.querySelector<HTMLElement>(".wiz-progress");
   if (prog) prog.dataset.step = String(n);
 }
 
 function bindWizard() {
-  const nameInput = $<HTMLInputElement>('wiz-name');
-  const emailInput = $<HTMLInputElement>('wiz-email');
-  const tzInput = $<HTMLInputElement>('wiz-tz');
-  const next1 = $<HTMLButtonElement>('wiz-next-1');
+  const nameInput = $<HTMLInputElement>("wiz-name");
+  const emailInput = $<HTMLInputElement>("wiz-email");
+  const tzInput = $<HTMLInputElement>("wiz-tz");
+  const next1 = $<HTMLButtonElement>("wiz-next-1");
   // Restore any draft saved before a mid-flow window close, falling back
   // to the detected timezone.
   const draft = loadWizardDraft();
@@ -1516,73 +1674,81 @@ function bindWizard() {
   // Prefill timezone with the (draft or system) value; user can edit.
   tzInput.value = wiz.timezone;
   next1.disabled = wiz.name.trim().length === 0;
-  nameInput.addEventListener('input', () => {
+  nameInput.addEventListener("input", () => {
     wiz.name = nameInput.value;
     next1.disabled = wiz.name.trim().length === 0;
     saveWizardDraft();
   });
-  emailInput.addEventListener('input', () => {
+  emailInput.addEventListener("input", () => {
     wiz.email = emailInput.value;
     // Clear any stale error as the user edits; re-validate on blur.
-    setFieldError('wiz-email-error', null);
+    setFieldError("wiz-email-error", null);
     saveWizardDraft();
   });
-  emailInput.addEventListener('blur', () => {
+  emailInput.addEventListener("blur", () => {
     setFieldError(
-      'wiz-email-error',
-      isPlausibleEmail(emailInput.value) ? null : 'That doesn’t look like an email address.',
+      "wiz-email-error",
+      isPlausibleEmail(emailInput.value)
+        ? null
+        : "That doesn’t look like an email address.",
     );
   });
-  tzInput.addEventListener('input', () => {
+  tzInput.addEventListener("input", () => {
     wiz.timezone = tzInput.value;
-    setFieldError('wiz-tz-error', null);
+    setFieldError("wiz-tz-error", null);
     saveWizardDraft();
   });
-  tzInput.addEventListener('blur', () => {
+  tzInput.addEventListener("blur", () => {
     setFieldError(
-      'wiz-tz-error',
-      isKnownTimezone(tzInput.value) ? null : 'Unknown time zone — your system time zone will be used.',
+      "wiz-tz-error",
+      isKnownTimezone(tzInput.value)
+        ? null
+        : "Unknown time zone — your system time zone will be used.",
     );
   });
-  next1.addEventListener('click', () => showWizardStep(2));
-  $('wiz-skip').addEventListener('click', skipWizard);
+  next1.addEventListener("click", () => showWizardStep(2));
+  $("wiz-skip").addEventListener("click", skipWizard);
 
-  $('wiz-back-2').addEventListener('click', () => showWizardStep(1));
-  $('wiz-next-2').addEventListener('click', () => {
-    const selected = document.querySelector<HTMLInputElement>('input[name=theme]:checked');
-    wiz.theme = (selected?.value as Settings['theme']) ?? 'system';
+  $("wiz-back-2").addEventListener("click", () => showWizardStep(1));
+  $("wiz-next-2").addEventListener("click", () => {
+    const selected = document.querySelector<HTMLInputElement>(
+      "input[name=theme]:checked",
+    );
+    wiz.theme = (selected?.value as Settings["theme"]) ?? "system";
     applyTheme(wiz.theme);
     showWizardStep(3);
   });
 
-  $('wiz-back-3').addEventListener('click', () => showWizardStep(2));
-  $('wiz-pick-dir').addEventListener('click', async () => {
+  $("wiz-back-3").addEventListener("click", () => showWizardStep(2));
+  $("wiz-pick-dir").addEventListener("click", async () => {
     const picked = await open({ directory: true, multiple: false });
-    if (typeof picked === 'string') {
+    if (typeof picked === "string") {
       wiz.dir = picked;
-      $<HTMLInputElement>('wiz-dir').value = picked;
+      $<HTMLInputElement>("wiz-dir").value = picked;
     }
   });
-  $('wiz-clear-dir').addEventListener('click', () => {
+  $("wiz-clear-dir").addEventListener("click", () => {
     wiz.dir = null;
-    $<HTMLInputElement>('wiz-dir').value = '';
+    $<HTMLInputElement>("wiz-dir").value = "";
   });
-  $('wiz-finish').addEventListener('click', finishWizard);
+  $("wiz-finish").addEventListener("click", finishWizard);
 }
 
 async function finishWizard() {
-  const finishBtn = $<HTMLButtonElement>('wiz-finish');
+  const finishBtn = $<HTMLButtonElement>("wiz-finish");
   finishBtn.disabled = true;
-  finishBtn.textContent = 'Saving…';
+  finishBtn.textContent = "Saving…";
   try {
-    const name = wiz.name.trim() || 'You';
+    const name = wiz.name.trim() || "You";
     // Email is optional, but never persist an obviously malformed value.
     // Timezone is validated against the known list; nonsense falls back to
     // the detected/empty value so we don't store garbage.
     const email = isPlausibleEmail(wiz.email) ? wiz.email.trim() || null : null;
-    const tz = isKnownTimezone(wiz.timezone) ? wiz.timezone.trim() || null : detectTimezone() || null;
+    const tz = isKnownTimezone(wiz.timezone)
+      ? wiz.timezone.trim() || null
+      : detectTimezone() || null;
     if (!isPlausibleEmail(wiz.email)) {
-      toast('That email looked malformed, so it wasn’t saved.', 'error', 4000);
+      toast("That email looked malformed, so it wasn’t saved.", "error", 4000);
     }
     const profile: Profile = {
       name,
@@ -1601,16 +1767,22 @@ async function finishWizard() {
       default_save_dir: wiz.dir,
     };
     const saved = await Promise.race([
-      invoke<Profile>('save_profile', { profile }),
+      invoke<Profile>("save_profile", { profile }),
       new Promise<Profile>((_, reject) =>
-        setTimeout(() => reject(new Error('Save profile timed out (5s)')), 5000),
+        setTimeout(
+          () => reject(new Error("Save profile timed out (5s)")),
+          5000,
+        ),
       ),
     ]);
     state.profile = saved;
     const savedSettings = await Promise.race([
-      invoke<Settings>('save_settings', { settings }),
+      invoke<Settings>("save_settings", { settings }),
       new Promise<Settings>((_, reject) =>
-        setTimeout(() => reject(new Error('Save settings timed out (5s)')), 5000),
+        setTimeout(
+          () => reject(new Error("Save settings timed out (5s)")),
+          5000,
+        ),
       ),
     ]);
     state.settings = savedSettings;
@@ -1619,19 +1791,19 @@ async function finishWizard() {
     clearWizardDraft();
     revealWorkspace();
   } catch (err) {
-    console.error('finishWizard failed', err);
+    console.error("finishWizard failed", err);
     // Show error inline on the wizard so the user sees what went wrong
     // (alert() can be eaten by some Linux webviews).
-    let errorEl = document.getElementById('wiz-error');
+    let errorEl = document.getElementById("wiz-error");
     if (!errorEl) {
-      errorEl = document.createElement('p');
-      errorEl.id = 'wiz-error';
-      errorEl.className = 'settings-error';
+      errorEl = document.createElement("p");
+      errorEl.id = "wiz-error";
+      errorEl.className = "settings-error";
       finishBtn.parentElement?.insertBefore(errorEl, finishBtn);
     }
     errorEl.textContent = `Could not save: ${err instanceof Error ? err.message : err}`;
     finishBtn.disabled = false;
-    finishBtn.textContent = 'Finish setup';
+    finishBtn.textContent = "Finish setup";
   }
 }
 
@@ -1643,12 +1815,15 @@ async function finishWizard() {
  * full finish does, so the wizard doesn't re-appear next boot.
  */
 async function skipWizard() {
-  const skipBtn = $<HTMLButtonElement>('wiz-skip');
+  const skipBtn = $<HTMLButtonElement>("wiz-skip");
   skipBtn.disabled = true;
   // Honor anything the user already typed on step 1, but only if it's valid.
-  const name = wiz.name.trim() || 'You';
+  const name = wiz.name.trim() || "You";
   const email = isPlausibleEmail(wiz.email) ? wiz.email.trim() || null : null;
-  const tz = (isKnownTimezone(wiz.timezone) ? wiz.timezone.trim() : '') || detectTimezone() || null;
+  const tz =
+    (isKnownTimezone(wiz.timezone) ? wiz.timezone.trim() : "") ||
+    detectTimezone() ||
+    null;
   const profile: Profile = {
     name,
     avatar_hue: hashHue(name.toLowerCase()),
@@ -1660,17 +1835,25 @@ async function skipWizard() {
   // Skipping resets theme/folder to defaults but must keep other persisted
   // prefs (privacy_mode, warn_on_unsaved_close, open_window_preference) — the
   // saved object is written verbatim, so spread the current settings first.
-  const settings: Settings = { ...state.settings, theme: 'system', default_save_dir: null };
+  const settings: Settings = {
+    ...state.settings,
+    theme: "system",
+    default_save_dir: null,
+  };
   try {
-    state.profile = await invoke<Profile>('save_profile', { profile });
-    state.settings = await invoke<Settings>('save_settings', { settings });
+    state.profile = await invoke<Profile>("save_profile", { profile });
+    state.settings = await invoke<Settings>("save_settings", { settings });
     applyTheme(state.settings.theme);
     broadcastTheme(state.settings.theme);
     clearWizardDraft();
     revealWorkspace();
   } catch (err) {
-    console.error('skipWizard failed', err);
-    toast(`Could not complete setup: ${err instanceof Error ? err.message : err}`, 'error', 4500);
+    console.error("skipWizard failed", err);
+    toast(
+      `Could not complete setup: ${err instanceof Error ? err.message : err}`,
+      "error",
+      4500,
+    );
     skipBtn.disabled = false;
   }
 }
@@ -1685,19 +1868,25 @@ async function skipWizard() {
  *  until a reload (UX-AUDIT §2). No-op until the profile is loaded. */
 function renderGreeting() {
   if (!state.profile) return;
-  const greet = $('greeting');
+  const greet = $("greeting");
   const hr = new Date().getHours();
   const partOfDay =
-    hr < 5 ? 'Working late' : hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+    hr < 5
+      ? "Working late"
+      : hr < 12
+        ? "Good morning"
+        : hr < 18
+          ? "Good afternoon"
+          : "Good evening";
   greet.textContent = `${partOfDay}, ${state.profile.name.split(/\s+/)[0]}`;
 }
 
 function revealWorkspace() {
-  $('wizard').hidden = true;
-  $('workspace').hidden = false;
+  $("wizard").hidden = true;
+  $("workspace").hidden = false;
   if (state.profile) {
-    renderAvatar($<HTMLSpanElement>('user-avatar'), state.profile);
-    const chipName = document.getElementById('user-chip-name');
+    renderAvatar($<HTMLSpanElement>("user-avatar"), state.profile);
+    const chipName = document.getElementById("user-chip-name");
     if (chipName) chipName.textContent = state.profile.name.split(/\s+/)[0];
     renderGreeting();
   }
@@ -1710,7 +1899,7 @@ function revealWorkspace() {
 async function maybeShowWhatsNew() {
   let appVersion: string;
   try {
-    appVersion = await invoke<string>('get_app_version');
+    appVersion = await invoke<string>("get_app_version");
   } catch {
     return;
   }
@@ -1740,26 +1929,23 @@ async function maybeShowWhatsNew() {
   showWhatsNew(entry, appVersion);
 }
 
-function showWhatsNew(
-  entry: (typeof CHANGELOG)[number],
-  appVersion: string,
-) {
-  const modal = $('whats-new');
-  $('whats-new-title').textContent = entry.title;
-  $('whats-new-version').textContent = `Casual Office ${appVersion}`;
-  const list = $<HTMLUListElement>('whats-new-list');
-  list.innerHTML = '';
+function showWhatsNew(entry: (typeof CHANGELOG)[number], appVersion: string) {
+  const modal = $("whats-new");
+  $("whats-new-title").textContent = entry.title;
+  $("whats-new-version").textContent = `Casual Office ${appVersion}`;
+  const list = $<HTMLUListElement>("whats-new-list");
+  list.innerHTML = "";
   for (const h of entry.highlights) {
-    const li = document.createElement('li');
+    const li = document.createElement("li");
     li.textContent = h;
     list.appendChild(li);
   }
   const previouslyFocused = document.activeElement as HTMLElement | null;
   modal.hidden = false;
-  setTimeout(() => $<HTMLButtonElement>('whats-new-dismiss').focus(), 0);
+  setTimeout(() => $<HTMLButtonElement>("whats-new-dismiss").focus(), 0);
 
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' || e.key === 'Enter') {
+    if (e.key === "Escape" || e.key === "Enter") {
       e.preventDefault();
       dismiss();
     } else {
@@ -1770,25 +1956,25 @@ function showWhatsNew(
   const onBackdrop = (e: MouseEvent) => {
     if (e.target === modal) dismiss();
   };
-  const dismissBtn = $<HTMLButtonElement>('whats-new-dismiss');
+  const dismissBtn = $<HTMLButtonElement>("whats-new-dismiss");
   const dismiss = async () => {
     modal.hidden = true;
-    window.removeEventListener('keydown', onKey);
-    modal.removeEventListener('mousedown', onBackdrop);
-    dismissBtn.removeEventListener('click', dismiss);
+    window.removeEventListener("keydown", onKey);
+    modal.removeEventListener("mousedown", onBackdrop);
+    dismissBtn.removeEventListener("click", dismiss);
     previouslyFocused?.focus?.();
     await markVersionSeen(appVersion);
   };
-  dismissBtn.addEventListener('click', dismiss);
-  modal.addEventListener('mousedown', onBackdrop);
-  window.addEventListener('keydown', onKey);
+  dismissBtn.addEventListener("click", dismiss);
+  modal.addEventListener("mousedown", onBackdrop);
+  window.addEventListener("keydown", onKey);
 }
 
 async function markVersionSeen(version: string) {
   const next: Settings = { ...state.settings, last_seen_version: version };
   state.settings = next;
   try {
-    await invoke('save_settings', { settings: next });
+    await invoke("save_settings", { settings: next });
   } catch {
     /* best-effort */
   }
@@ -1797,34 +1983,44 @@ async function markVersionSeen(version: string) {
 const avatarDataUrlCache = new Map<string, string>();
 
 async function renderAvatar(el: HTMLElement, profile: Profile) {
-  el.style.backgroundImage = '';
-  el.textContent = '';
+  el.style.backgroundImage = "";
+  el.textContent = "";
   if (profile.avatar_path) {
     try {
       let dataUrl = avatarDataUrlCache.get(profile.avatar_path);
       if (!dataUrl) {
-        const bytes = await invoke<number[]>('read_avatar_bytes', { path: profile.avatar_path });
-        const ext = profile.avatar_path.split('.').pop()?.toLowerCase() ?? 'png';
-        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
-          : ext === 'webp' ? 'image/webp'
-          : ext === 'gif' ? 'image/gif'
-          : 'image/png';
+        const bytes = await invoke<number[]>("read_avatar_bytes", {
+          path: profile.avatar_path,
+        });
+        const ext =
+          profile.avatar_path.split(".").pop()?.toLowerCase() ?? "png";
+        const mime =
+          ext === "jpg" || ext === "jpeg"
+            ? "image/jpeg"
+            : ext === "webp"
+              ? "image/webp"
+              : ext === "gif"
+                ? "image/gif"
+                : "image/png";
         // btoa needs a binary string; chunk to avoid call-stack overflow.
-        let bin = '';
+        let bin = "";
         const arr = Uint8Array.from(bytes);
         for (let i = 0; i < arr.length; i += 0x8000) {
-          bin += String.fromCharCode.apply(null, Array.from(arr.subarray(i, i + 0x8000)));
+          bin += String.fromCharCode.apply(
+            null,
+            Array.from(arr.subarray(i, i + 0x8000)),
+          );
         }
         dataUrl = `data:${mime};base64,${btoa(bin)}`;
         avatarDataUrlCache.set(profile.avatar_path, dataUrl);
       }
       el.style.backgroundImage = `url("${dataUrl}")`;
-      el.style.backgroundSize = 'cover';
-      el.style.backgroundPosition = 'center';
-      el.style.backgroundColor = 'transparent';
+      el.style.backgroundSize = "cover";
+      el.style.backgroundPosition = "center";
+      el.style.backgroundColor = "transparent";
       return;
     } catch (err) {
-      console.warn('avatar read failed', err);
+      console.warn("avatar read failed", err);
     }
   }
   el.textContent = initials(profile.name);
@@ -1834,28 +2030,28 @@ async function renderAvatar(el: HTMLElement, profile: Profile) {
 // ---------- Settings panel -------------------------------------------------
 
 function showSettings() {
-  $('home-panel').hidden = true;
-  $('settings-panel').hidden = false;
-  $('user-chip').setAttribute('aria-pressed', 'true');
+  $("home-panel").hidden = true;
+  $("settings-panel").hidden = false;
+  $("user-chip").setAttribute("aria-pressed", "true");
   populateSettings();
   // Escape returns to home.
-  window.addEventListener('keydown', settingsEscape);
+  window.addEventListener("keydown", settingsEscape);
 }
 
 function hideSettings() {
-  $('settings-panel').hidden = true;
-  $('home-panel').hidden = false;
-  $('user-chip').setAttribute('aria-pressed', 'false');
-  $('settings-error').textContent = '';
+  $("settings-panel").hidden = true;
+  $("home-panel").hidden = false;
+  $("user-chip").setAttribute("aria-pressed", "false");
+  $("settings-error").textContent = "";
   // Revert any unsaved live theme preview to the stored theme. After a
   // successful Save, state.settings.theme already holds the new value so this
   // is a harmless re-apply; after a cancel/Escape it undoes the preview.
   applyTheme(state.settings.theme);
-  window.removeEventListener('keydown', settingsEscape);
+  window.removeEventListener("keydown", settingsEscape);
 }
 
 function settingsEscape(e: KeyboardEvent) {
-  if (e.key === 'Escape' && !$('settings-panel').hidden) {
+  if (e.key === "Escape" && !$("settings-panel").hidden) {
     e.preventDefault();
     hideSettings();
   }
@@ -1863,120 +2059,139 @@ function settingsEscape(e: KeyboardEvent) {
 
 function populateSettings() {
   if (!state.profile) return;
-  setFieldError('settings-email-error', null);
-  setFieldError('settings-tz-error', null);
-  renderAvatar($('settings-avatar'), state.profile);
-  $<HTMLInputElement>('settings-name').value = state.profile.name;
-  $<HTMLInputElement>('settings-email').value = state.profile.email ?? '';
-  $<HTMLInputElement>('settings-tz').value = state.profile.timezone ?? detectTimezone();
-  $<HTMLInputElement>('settings-dir').value = state.settings.default_save_dir ?? '';
-  const privacyEl = $<HTMLInputElement>('settings-privacy');
+  setFieldError("settings-email-error", null);
+  setFieldError("settings-tz-error", null);
+  renderAvatar($("settings-avatar"), state.profile);
+  $<HTMLInputElement>("settings-name").value = state.profile.name;
+  $<HTMLInputElement>("settings-email").value = state.profile.email ?? "";
+  $<HTMLInputElement>("settings-tz").value =
+    state.profile.timezone ?? detectTimezone();
+  $<HTMLInputElement>("settings-dir").value =
+    state.settings.default_save_dir ?? "";
+  const privacyEl = $<HTMLInputElement>("settings-privacy");
   privacyEl.checked = state.settings.privacy_mode === true;
   // Disable where the underlying content-protection call is a no-op (Linux), so
   // the control's enabled state reflects whether it actually does anything.
   privacyEl.disabled = isLinuxDesktop();
   // Behavior: open-where preference (defaults to "ask") and the unsaved-close
   // warning (defaults to true when absent).
-  const openPref = state.settings.open_window_preference ?? 'ask';
-  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-open-pref]')) {
+  const openPref = state.settings.open_window_preference ?? "ask";
+  for (const radio of document.querySelectorAll<HTMLInputElement>(
+    "input[name=settings-open-pref]",
+  )) {
     radio.checked = radio.value === openPref;
   }
-  $<HTMLInputElement>('settings-warn-close').checked = state.settings.warn_on_unsaved_close !== false;
-  $<HTMLInputElement>('settings-auto-update').checked = state.settings.auto_update !== false;
-  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-theme]')) {
+  $<HTMLInputElement>("settings-warn-close").checked =
+    state.settings.warn_on_unsaved_close !== false;
+  $<HTMLInputElement>("settings-auto-update").checked =
+    state.settings.auto_update !== false;
+  for (const radio of document.querySelectorAll<HTMLInputElement>(
+    "input[name=settings-theme]",
+  )) {
     radio.checked = radio.value === state.settings.theme;
   }
   syncThemeCardAria();
   // App version in About — cheap call, but only on settings-open to keep
   // boot light.
-  invoke<string>('get_app_version')
+  invoke<string>("get_app_version")
     .then((v) => {
-      const el = document.getElementById('settings-version');
+      const el = document.getElementById("settings-version");
       if (el) el.textContent = `v${v}`;
     })
     .catch(() => undefined);
 }
 
 function bindSettings() {
-  $('user-chip').addEventListener('click', showSettings);
-  $('settings-close').addEventListener('click', hideSettings);
+  $("user-chip").addEventListener("click", showSettings);
+  $("settings-close").addEventListener("click", hideSettings);
 
   // Live theme preview: selecting a theme in Settings applies it to the
   // launcher immediately (matching the first-run wizard), so the choice is
   // visible before Save. Save persists + broadcasts to open editor windows;
   // closing without saving reverts to the stored theme (see hideSettings).
-  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=settings-theme]')) {
-    radio.addEventListener('change', () => {
+  for (const radio of document.querySelectorAll<HTMLInputElement>(
+    "input[name=settings-theme]",
+  )) {
+    radio.addEventListener("change", () => {
       if (!radio.checked) return;
-      applyTheme(radio.value as Settings['theme']);
+      applyTheme(radio.value as Settings["theme"]);
       syncThemeCardAria();
     });
   }
 
   // Inline, non-blocking validation on blur for the optional email and the
   // timezone field (mirrors the wizard).
-  const settingsEmail = $<HTMLInputElement>('settings-email');
-  settingsEmail.addEventListener('input', () => setFieldError('settings-email-error', null));
-  settingsEmail.addEventListener('blur', () => {
+  const settingsEmail = $<HTMLInputElement>("settings-email");
+  settingsEmail.addEventListener("input", () =>
+    setFieldError("settings-email-error", null),
+  );
+  settingsEmail.addEventListener("blur", () => {
     setFieldError(
-      'settings-email-error',
-      isPlausibleEmail(settingsEmail.value) ? null : 'That doesn’t look like an email address.',
+      "settings-email-error",
+      isPlausibleEmail(settingsEmail.value)
+        ? null
+        : "That doesn’t look like an email address.",
     );
   });
-  const settingsTz = $<HTMLInputElement>('settings-tz');
-  settingsTz.addEventListener('input', () => setFieldError('settings-tz-error', null));
-  settingsTz.addEventListener('blur', () => {
+  const settingsTz = $<HTMLInputElement>("settings-tz");
+  settingsTz.addEventListener("input", () =>
+    setFieldError("settings-tz-error", null),
+  );
+  settingsTz.addEventListener("blur", () => {
     setFieldError(
-      'settings-tz-error',
-      isKnownTimezone(settingsTz.value) ? null : 'Unknown time zone — your previous setting will be kept.',
+      "settings-tz-error",
+      isKnownTimezone(settingsTz.value)
+        ? null
+        : "Unknown time zone — your previous setting will be kept.",
     );
   });
 
-  $('settings-pick-avatar').addEventListener('click', async () => {
+  $("settings-pick-avatar").addEventListener("click", async () => {
     try {
-      const newPath = await invoke<string | null>('pick_avatar_image');
+      const newPath = await invoke<string | null>("pick_avatar_image");
       if (!newPath || !state.profile) return;
       const next: Profile = { ...state.profile, avatar_path: newPath };
-      state.profile = await invoke<Profile>('save_profile', { profile: next });
+      state.profile = await invoke<Profile>("save_profile", { profile: next });
       avatarDataUrlCache.delete(newPath);
-      await renderAvatar($('settings-avatar'), state.profile);
-      await renderAvatar($('user-avatar'), state.profile);
-      toast('Profile picture updated', 'success');
+      await renderAvatar($("settings-avatar"), state.profile);
+      await renderAvatar($("user-avatar"), state.profile);
+      toast("Profile picture updated", "success");
     } catch (err) {
-      $('settings-error').textContent = `Could not set picture: ${err}`;
+      $("settings-error").textContent = `Could not set picture: ${err}`;
     }
   });
 
-  $('settings-remove-avatar').addEventListener('click', async () => {
+  $("settings-remove-avatar").addEventListener("click", async () => {
     if (!state.profile?.avatar_path) return;
     const next: Profile = { ...state.profile, avatar_path: null };
     try {
-      state.profile = await invoke<Profile>('save_profile', { profile: next });
-      await renderAvatar($('settings-avatar'), state.profile);
-      await renderAvatar($('user-avatar'), state.profile);
-      toast('Profile picture removed', 'success');
+      state.profile = await invoke<Profile>("save_profile", { profile: next });
+      await renderAvatar($("settings-avatar"), state.profile);
+      await renderAvatar($("user-avatar"), state.profile);
+      toast("Profile picture removed", "success");
     } catch (err) {
-      $('settings-error').textContent = `Could not remove picture: ${err}`;
+      $("settings-error").textContent = `Could not remove picture: ${err}`;
     }
   });
 
-  $('settings-pick-dir').addEventListener('click', async () => {
+  $("settings-pick-dir").addEventListener("click", async () => {
     const picked = await open({ directory: true, multiple: false });
-    if (typeof picked === 'string') $<HTMLInputElement>('settings-dir').value = picked;
+    if (typeof picked === "string")
+      $<HTMLInputElement>("settings-dir").value = picked;
   });
-  $('settings-clear-dir').addEventListener('click', () => {
-    $<HTMLInputElement>('settings-dir').value = '';
+  $("settings-clear-dir").addEventListener("click", () => {
+    $<HTMLInputElement>("settings-dir").value = "";
   });
 
-  $('settings-rerun-wizard').addEventListener('click', async () => {
+  $("settings-rerun-wizard").addEventListener("click", async () => {
     const ok = await confirmDialog({
-      title: 'Re-run the setup wizard?',
+      title: "Re-run the setup wizard?",
       body:
-        'This walks you back through the welcome steps with your current details prefilled. ' +
-        'Nothing is cleared until you finish — your recent files and theme are kept, and your ' +
-        'existing profile stays as-is if you back out.',
-      confirmLabel: 'Run setup',
-      cancelLabel: 'Stay here',
+        "This walks you back through the welcome steps with your current details prefilled. " +
+        "Nothing is cleared until you finish — your recent files and theme are kept, and your " +
+        "existing profile stays as-is if you back out.",
+      confirmLabel: "Run setup",
+      cancelLabel: "Stay here",
     });
     if (!ok) return;
     // Re-show the first-run wizard WITHOUT wiping the stored profile — the
@@ -1984,62 +2199,72 @@ function bindSettings() {
     // closing the window mid-flow leaves the original profile intact. We
     // prefill from the live profile so the user tweaks rather than retypes.
     hideSettings();
-    $('workspace').hidden = true;
-    $('wizard').hidden = false;
+    $("workspace").hidden = true;
+    $("wizard").hidden = false;
     showWizardStep(1);
     const p = state.profile;
-    wiz.name = p && p.name !== 'You' ? p.name : '';
-    wiz.email = p?.email ?? '';
+    wiz.name = p && p.name !== "You" ? p.name : "";
+    wiz.email = p?.email ?? "";
     wiz.timezone = p?.timezone ?? detectTimezone();
     wiz.theme = state.settings.theme;
     wiz.dir = state.settings.default_save_dir ?? null;
     // Drop any stale half-finished draft so it doesn't clobber the prefill.
     clearWizardDraft();
-    $<HTMLInputElement>('wiz-name').value = wiz.name;
-    $<HTMLInputElement>('wiz-email').value = wiz.email;
-    $<HTMLInputElement>('wiz-tz').value = wiz.timezone;
+    $<HTMLInputElement>("wiz-name").value = wiz.name;
+    $<HTMLInputElement>("wiz-email").value = wiz.email;
+    $<HTMLInputElement>("wiz-tz").value = wiz.timezone;
     // Re-sync the theme + default-dir controls the later steps read from.
-    for (const radio of document.querySelectorAll<HTMLInputElement>('input[name=theme]')) {
+    for (const radio of document.querySelectorAll<HTMLInputElement>(
+      "input[name=theme]",
+    )) {
       radio.checked = radio.value === wiz.theme;
     }
     syncThemeCardAria();
-    $<HTMLInputElement>('wiz-dir').value = wiz.dir ?? '';
+    $<HTMLInputElement>("wiz-dir").value = wiz.dir ?? "";
     // Enable/disable step-1 Next to match the prefilled name.
-    $<HTMLButtonElement>('wiz-next-1').disabled = wiz.name.trim().length === 0;
-    $<HTMLInputElement>('wiz-name').focus();
+    $<HTMLButtonElement>("wiz-next-1").disabled = wiz.name.trim().length === 0;
+    $<HTMLInputElement>("wiz-name").focus();
   });
 
-  $('settings-save').addEventListener('click', async () => {
+  $("settings-save").addEventListener("click", async () => {
     if (!state.profile) return;
-    $('settings-error').textContent = '';
-    const name = $<HTMLInputElement>('settings-name').value.trim();
+    $("settings-error").textContent = "";
+    const name = $<HTMLInputElement>("settings-name").value.trim();
     if (!name) {
-      $('settings-error').textContent = 'Name is required.';
+      $("settings-error").textContent = "Name is required.";
       return;
     }
-    const themeRadio = document.querySelector<HTMLInputElement>('input[name=settings-theme]:checked');
-    const theme = (themeRadio?.value as Settings['theme']) ?? 'system';
-    const dir = $<HTMLInputElement>('settings-dir').value.trim() || null;
+    const themeRadio = document.querySelector<HTMLInputElement>(
+      "input[name=settings-theme]:checked",
+    );
+    const theme = (themeRadio?.value as Settings["theme"]) ?? "system";
+    const dir = $<HTMLInputElement>("settings-dir").value.trim() || null;
     // Email is optional but never persisted malformed — surface it inline
     // and drop the bad value rather than saving nonsense silently.
-    const rawEmail = $<HTMLInputElement>('settings-email').value;
+    const rawEmail = $<HTMLInputElement>("settings-email").value;
     let email: string | null;
     if (isPlausibleEmail(rawEmail)) {
-      setFieldError('settings-email-error', null);
+      setFieldError("settings-email-error", null);
       email = rawEmail.trim() || null;
     } else {
-      setFieldError('settings-email-error', 'That doesn’t look like an email address — not saved.');
+      setFieldError(
+        "settings-email-error",
+        "That doesn’t look like an email address — not saved.",
+      );
       email = state.profile.email; // keep the previously-stored value
     }
     // Timezone: validate against the known list; fall back to the existing
     // stored value (or empty) rather than persisting something unknown.
-    const rawTz = $<HTMLInputElement>('settings-tz').value;
+    const rawTz = $<HTMLInputElement>("settings-tz").value;
     let timezone: string | null;
     if (isKnownTimezone(rawTz)) {
-      setFieldError('settings-tz-error', null);
+      setFieldError("settings-tz-error", null);
       timezone = rawTz.trim() || null;
     } else {
-      setFieldError('settings-tz-error', 'Unknown time zone — keeping your previous setting.');
+      setFieldError(
+        "settings-tz-error",
+        "Unknown time zone — keeping your previous setting.",
+      );
       timezone = state.profile.timezone;
     }
     const updatedProfile: Profile = {
@@ -2056,25 +2281,30 @@ function bindSettings() {
       await warnIfFolderUnusable(dir);
     }
     const openPrefRadio = document.querySelector<HTMLInputElement>(
-      'input[name=settings-open-pref]:checked',
+      "input[name=settings-open-pref]:checked",
     );
-    const openPref = (openPrefRadio?.value as Settings['open_window_preference']) ?? 'ask';
+    const openPref =
+      (openPrefRadio?.value as Settings["open_window_preference"]) ?? "ask";
     const updatedSettings: Settings = {
       ...state.settings,
       theme,
       default_save_dir: dir,
-      privacy_mode: $<HTMLInputElement>('settings-privacy').checked,
+      privacy_mode: $<HTMLInputElement>("settings-privacy").checked,
       open_window_preference: openPref,
-      warn_on_unsaved_close: $<HTMLInputElement>('settings-warn-close').checked,
-      auto_update: $<HTMLInputElement>('settings-auto-update').checked,
+      warn_on_unsaved_close: $<HTMLInputElement>("settings-warn-close").checked,
+      auto_update: $<HTMLInputElement>("settings-auto-update").checked,
     };
-    const saveBtn = $<HTMLButtonElement>('settings-save');
-    const originalLabel = saveBtn.textContent ?? 'Save changes';
+    const saveBtn = $<HTMLButtonElement>("settings-save");
+    const originalLabel = saveBtn.textContent ?? "Save changes";
     saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving…';
+    saveBtn.textContent = "Saving…";
     try {
-      state.profile = await invoke<Profile>('save_profile', { profile: updatedProfile });
-      state.settings = await invoke<Settings>('save_settings', { settings: updatedSettings });
+      state.profile = await invoke<Profile>("save_profile", {
+        profile: updatedProfile,
+      });
+      state.settings = await invoke<Settings>("save_settings", {
+        settings: updatedSettings,
+      });
       applyTheme(state.settings.theme);
       broadcastTheme(state.settings.theme);
       // Apply privacy mode live to every open window (launcher + all
@@ -2083,19 +2313,23 @@ function bindSettings() {
       // per-window failure instead of silently implying success. On
       // Linux/WebKitGTK there's no compositor API for this, so the toggle
       // is a stored preference only (the Settings copy says as much).
-      await invoke('apply_privacy_mode', { enabled: updatedSettings.privacy_mode === true }).catch(
-        (err) => {
-          console.warn('apply_privacy_mode failed', err);
-          toast('Privacy mode could not be applied to every open window.', 'error', 4500);
-        },
-      );
-      await renderAvatar($('user-avatar'), state.profile);
-      const chipName = document.getElementById('user-chip-name');
+      await invoke("apply_privacy_mode", {
+        enabled: updatedSettings.privacy_mode === true,
+      }).catch((err) => {
+        console.warn("apply_privacy_mode failed", err);
+        toast(
+          "Privacy mode could not be applied to every open window.",
+          "error",
+          4500,
+        );
+      });
+      await renderAvatar($("user-avatar"), state.profile);
+      const chipName = document.getElementById("user-chip-name");
       if (chipName) chipName.textContent = state.profile.name.split(/\s+/)[0];
       hideSettings();
-      toast('Settings saved', 'success');
+      toast("Settings saved", "success");
     } catch (err) {
-      $('settings-error').textContent = `Could not save: ${err}`;
+      $("settings-error").textContent = `Could not save: ${err}`;
     } finally {
       saveBtn.disabled = false;
       saveBtn.textContent = originalLabel;
@@ -2111,7 +2345,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 }
 
 function hideBootSkeleton() {
-  const sk = document.getElementById('boot-skeleton');
+  const sk = document.getElementById("boot-skeleton");
   if (sk) sk.hidden = true;
 }
 
@@ -2122,9 +2356,13 @@ async function boot() {
   bindSettings();
   bindShortcuts();
   // Keep theme-card aria-checked in sync whenever any theme radio changes.
-  document.addEventListener('change', (e) => {
+  document.addEventListener("change", (e) => {
     const t = e.target as HTMLElement;
-    if (t instanceof HTMLInputElement && t.type === 'radio' && t.closest('.theme-card')) {
+    if (
+      t instanceof HTMLInputElement &&
+      t.type === "radio" &&
+      t.closest(".theme-card")
+    ) {
       syncThemeCardAria();
     }
   });
@@ -2138,32 +2376,38 @@ async function boot() {
   // close-guard's dirty flag for "main" would otherwise persist, popping a
   // false "unsaved changes" prompt over a home screen with nothing to save.
   // Best-effort; a no-op outside the shell.
-  void invoke('set_window_dirty', { dirty: false }).catch(() => undefined);
+  void invoke("set_window_dirty", { dirty: false }).catch(() => undefined);
 
   // Each IPC call gets a short timeout fallback so a single broken Tauri
   // command can't strand the user on a blank screen.
-  const firstRun = await withTimeout(invoke<boolean>('is_first_run'), 3000, true);
+  const firstRun = await withTimeout(
+    invoke<boolean>("is_first_run"),
+    3000,
+    true,
+  );
   if (firstRun) {
-    const s = await withTimeout(
-      invoke<Settings>('get_settings'),
-      2000,
-      { theme: 'system', default_save_dir: null } as Settings,
-    );
+    const s = await withTimeout(invoke<Settings>("get_settings"), 2000, {
+      theme: "system",
+      default_save_dir: null,
+    } as Settings);
     state.settings = s;
     applyTheme(s.theme);
     hideBootSkeleton();
-    $('wizard').hidden = false;
+    $("wizard").hidden = false;
     showWizardStep(1);
-    $<HTMLInputElement>('wiz-name').focus();
+    $<HTMLInputElement>("wiz-name").focus();
     return;
   }
 
-  const profile = await withTimeout(invoke<Profile | null>('get_profile'), 2000, null);
-  const settings = await withTimeout(
-    invoke<Settings>('get_settings'),
+  const profile = await withTimeout(
+    invoke<Profile | null>("get_profile"),
     2000,
-    { theme: 'system', default_save_dir: null } as Settings,
+    null,
   );
+  const settings = await withTimeout(invoke<Settings>("get_settings"), 2000, {
+    theme: "system",
+    default_save_dir: null,
+  } as Settings);
   state.profile = profile;
   state.settings = settings;
   applyTheme(settings.theme);
@@ -2179,7 +2423,7 @@ async function boot() {
       await maybeCheckForUpdate();
     })();
   } else {
-    $('wizard').hidden = false;
+    $("wizard").hidden = false;
     showWizardStep(1);
     // No recovery prompt during first-run; the update check is still safe to
     // fire (best-effort, never gates boot on the network).
@@ -2197,12 +2441,14 @@ async function boot() {
 async function maybeCheckForUpdate() {
   if (state.settings.auto_update === false) return;
   // Only meaningful inside the Tauri shell (the plugin isn't present on web).
-  if (typeof window === 'undefined' || !('__TAURI__' in window)) return;
+  if (typeof window === "undefined" || !("__TAURI__" in window)) return;
   // Don't offer an update the running install can't actually apply in place —
   // e.g. a Linux .deb, which the AppImage-only updater can't replace. Offering
   // it just leads to a failed download. Best-effort: assume supported if the
   // check itself fails.
-  const updatable = await invoke<boolean>('is_update_supported').catch(() => true);
+  const updatable = await invoke<boolean>("is_update_supported").catch(
+    () => true,
+  );
   if (!updatable) return;
   let downloadStarted = false;
   try {
@@ -2211,27 +2457,29 @@ async function maybeCheckForUpdate() {
     const ok = await confirmDialog({
       title: `Update available — ${update.version}`,
       body: `A newer version of Casual Office (${update.version}) is available.${
-        update.body ? `\n\n${update.body}` : ''
+        update.body ? `\n\n${update.body}` : ""
       }\n\nInstall it now? The app will restart.`,
-      confirmLabel: 'Install & restart',
-      cancelLabel: 'Later',
+      confirmLabel: "Install & restart",
+      cancelLabel: "Later",
     });
     if (!ok) return;
     // Guard against data loss: relaunch() kills every window without the
     // CloseRequested/dirty-flag flow, so refuse to auto-install while a
     // document has unsaved edits (the prompt can surface minutes after boot,
     // once the user is mid-edit). Let them save; the update lands next launch.
-    const hasUnsaved = await invoke<boolean>('has_unsaved_documents').catch(() => false);
+    const hasUnsaved = await invoke<boolean>("has_unsaved_documents").catch(
+      () => false,
+    );
     if (hasUnsaved) {
       await confirmDialog({
-        title: 'Save your work first',
-        body: 'You have unsaved changes in an open document. Save them, then the update will install automatically the next time you start Casual Office.',
-        confirmLabel: 'OK',
+        title: "Save your work first",
+        body: "You have unsaved changes in an open document. Save them, then the update will install automatically the next time you start Casual Office.",
+        confirmLabel: "OK",
       });
       return;
     }
     downloadStarted = true;
-    setStatus('Downloading update…');
+    setStatus("Downloading update…");
     await update.downloadAndInstall();
     await relaunch();
   } catch (err) {
@@ -2239,9 +2487,9 @@ async function maybeCheckForUpdate() {
     // this is expected — stay quiet. Once the user has opted in and is watching
     // the "Downloading update…" status, a silent failure reads as a hang:
     // clear it and surface a brief error instead.
-    console.debug('[update] check failed', err);
+    console.debug("[update] check failed", err);
     if (downloadStarted) {
-      setStatus('Update failed — please try again later.', 6000);
+      setStatus("Update failed — please try again later.", 6000);
     }
   }
 }
@@ -2257,7 +2505,7 @@ interface RecoveryEntry {
  *  restore its unsaved changes; declining discards the sidecar. */
 async function maybeOfferRecovery() {
   const pending = await withTimeout(
-    invoke<RecoveryEntry[]>('pending_recoveries'),
+    invoke<RecoveryEntry[]>("pending_recoveries"),
     2000,
     [] as RecoveryEntry[],
   );
@@ -2266,10 +2514,10 @@ async function maybeOfferRecovery() {
     if (!kind) continue;
     const name = entry.path.split(/[\\/]/).pop() || entry.path;
     const ok = await confirmDialog({
-      title: 'Recover unsaved changes?',
+      title: "Recover unsaved changes?",
       body: `“${name}” has unsaved changes from a session that didn't close normally. Reopen it to review and restore them?`,
-      confirmLabel: 'Reopen',
-      cancelLabel: 'Discard',
+      confirmLabel: "Reopen",
+      cancelLabel: "Discard",
     });
     if (ok) {
       // Reopen the file. The editor finds the sidecar on load and surfaces its
@@ -2279,17 +2527,17 @@ async function maybeOfferRecovery() {
       openOrReplaceLauncher(kind, entry.path);
       break;
     }
-    void invoke('clear_recovery', { path: entry.path }).catch(() => undefined);
+    void invoke("clear_recovery", { path: entry.path }).catch(() => undefined);
   }
 }
 
 boot().catch((err) => {
-  console.error('boot failed', err);
+  console.error("boot failed", err);
   hideBootSkeleton();
   // Show the wizard even on catastrophic failure so the user has somewhere
   // to start; the wizard's save_profile call will surface the real error.
-  $('wizard').hidden = false;
+  $("wizard").hidden = false;
   showWizardStep(1);
-  const status = document.getElementById('status');
+  const status = document.getElementById("status");
   if (status) status.textContent = `Startup error: ${err}`;
 });

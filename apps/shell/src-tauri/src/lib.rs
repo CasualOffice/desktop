@@ -35,6 +35,7 @@ impl DocKind {
     fn from_path(path: &str) -> Option<Self> {
         let lower = path.to_lowercase();
         if lower.ends_with(".docx")
+            || lower.ends_with(".odt")
             || lower.ends_with(".txt")
             || lower.ends_with(".md")
             || lower.ends_with(".markdown")
@@ -1053,7 +1054,8 @@ async fn pick_open_document(app: AppHandle) -> Result<Option<String>, String> {
         .add_filter(
             "Documents",
             &[
-                "docx", "txt", "md", "markdown", "xlsx", "xlsm", "ods", "csv", "tsv", "tab",
+                "docx", "odt", "txt", "md", "markdown", "xlsx", "xlsm", "ods", "csv", "tsv",
+                "tab",
             ],
         )
         .pick_file(move |p| {
