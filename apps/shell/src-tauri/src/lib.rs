@@ -47,6 +47,7 @@ impl DocKind {
             || lower.ends_with(".csv")
             || lower.ends_with(".tsv")
             || lower.ends_with(".tab")
+            || lower.ends_with(".psv")
         {
             Some(DocKind::Sheets)
         } else {
@@ -1055,7 +1056,7 @@ async fn pick_open_document(app: AppHandle) -> Result<Option<String>, String> {
             "Documents",
             &[
                 "docx", "odt", "txt", "md", "markdown", "xlsx", "xlsm", "ods", "csv", "tsv",
-                "tab",
+                "tab", "psv",
             ],
         )
         .pick_file(move |p| {
