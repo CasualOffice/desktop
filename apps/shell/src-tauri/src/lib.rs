@@ -846,6 +846,83 @@ async fn save_document(path: String, bytes: Vec<u8>) -> Result<(), String> {
     std::fs::write(&path, &bytes).map_err(|e| format!("write {path}: {e}"))
 }
 
+/// Rename the file backing a document window on disk, in place (same
+/// directory). Returns the new absolute path so the editor can re-bind its
+/// `filePath` (subsequent saves overwrite the renamed file) and update its
+/// title. The original extension is always preserved — the user types a display
+/// name; if they include the extension it's de-duplicated, if they omit it the
+/// original is appended. Refuses to clobber an existing file. Editors call this
+/// from their rename handler when running in the desktop shell.
+#[tauri::command]
+fn rename_document(
+    app: AppHandle,
+    state: tauri::State<'_, RecentsState>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let old = PathBuf::from(&path);
+    if !old.exists() {
+        return Err(format!("file not found: {path}"));
+    }
+    let parent = old
+        .parent()
+        .ok_or_else(|| "file has no parent directory".to_string())?;
+    let orig_ext = old.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Take only the file-name portion the user typed (drop any path the user
+    // pasted in), and trim it.
+    let typed = new_name.trim();
+    let typed = typed.rsplit(['/', '\\']).next().unwrap_or(typed).trim();
+    if typed.is_empty() {
+        return Err("name cannot be empty".to_string());
+    }
+
+    // Strip a trailing duplicate of the original extension (case-insensitive) so
+    // "Report" and "Report.xlsx" both resolve to "Report.<orig_ext>".
+    let stem = if !orig_ext.is_empty()
+        && typed
+            .to_lowercase()
+            .ends_with(&format!(".{}", orig_ext.to_lowercase()))
+    {
+        &typed[..typed.len() - (orig_ext.len() + 1)]
+    } else {
+        typed
+    };
+    let stem = stem.trim();
+    if stem.is_empty() {
+        return Err("name cannot be empty".to_string());
+    }
+    let file_name = if orig_ext.is_empty() {
+        stem.to_string()
+    } else {
+        format!("{stem}.{orig_ext}")
+    };
+
+    let new_path = parent.join(&file_name);
+    if new_path == old {
+        return Ok(path);
+    }
+    if new_path.exists() {
+        return Err(format!("a file named \"{file_name}\" already exists"));
+    }
+    std::fs::rename(&old, &new_path).map_err(|e| format!("rename: {e}"))?;
+    let new_path_str = new_path.to_string_lossy().to_string();
+
+    // Re-point the recents entry (preserve pin/order) so the launcher reflects
+    // the rename instead of showing a now-stale path. Persist under the lock —
+    // see remove_recent_file for why.
+    {
+        let mut list = state.list.lock().unwrap();
+        if let Some(entry) = list.iter_mut().find(|r| r.path == path) {
+            entry.path = new_path_str.clone();
+            entry.last_opened = now_secs();
+        }
+        let _ = save_recents(&app, list.as_slice());
+    }
+
+    Ok(new_path_str)
+}
+
 // --- Atomic chunked save -----------------------------------------------------
 //
 // SAVE CONTRACT (editors MUST follow this order):
@@ -1793,6 +1870,7 @@ pub fn run() {
             reveal_in_folder,
             save_document,
             save_document_as,
+            rename_document,
             begin_save_document,
             write_save_chunk,
             commit_save_document,
