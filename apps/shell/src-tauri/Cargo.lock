@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "deskapp-shell"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "block2",
  "gtk",
