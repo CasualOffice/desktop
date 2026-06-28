@@ -777,6 +777,7 @@ function typeLabelFor(path: string, kind: DocKind): string {
   const ext = path.toLowerCase().split(".").pop() ?? "";
   const byExt: Record<string, string> = {
     docx: "Word",
+    odt: "ODT",
     txt: "Text",
     md: "Markdown",
     markdown: "Markdown",
@@ -786,6 +787,7 @@ function typeLabelFor(path: string, kind: DocKind): string {
     csv: "CSV",
     tsv: "TSV",
     tab: "TSV",
+    psv: "PSV",
   };
   return byExt[ext] ?? (kind === "docx" ? "Document" : "Spreadsheet");
 }
@@ -1176,6 +1178,7 @@ function bindHomePanel() {
           name: "All supported",
           extensions: [
             "docx",
+            "odt",
             "txt",
             "md",
             "markdown",
@@ -1185,12 +1188,13 @@ function bindHomePanel() {
             "csv",
             "tsv",
             "tab",
+            "psv",
           ],
         },
-        { name: "Word document", extensions: ["docx"] },
+        { name: "Word document", extensions: ["docx", "odt"] },
         { name: "Text", extensions: ["txt", "md", "markdown"] },
         { name: "Spreadsheet", extensions: ["xlsx", "xlsm", "ods"] },
-        { name: "Delimited", extensions: ["csv", "tsv", "tab"] },
+        { name: "Delimited", extensions: ["csv", "tsv", "tab", "psv"] },
       ],
     });
     if (!selected || typeof selected !== "string") return;
