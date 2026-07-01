@@ -2549,6 +2549,168 @@ async function maybeOfferRecovery() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Iframe bridge — receive side.
+//
+// The editor's desk-bridge-bootstrap.ts sends `window.parent.postMessage`
+// envelopes when the editor runs inside an iframe (embedded use). The
+// launcher dispatches each method to the appropriate Tauri invoke command and
+// replies with `{ src:'deskApp', kind:'reply', id, result? error? }`.
+// ---------------------------------------------------------------------------
+window.addEventListener("message", async (event: MessageEvent) => {
+  const data = event.data as {
+    src?: string;
+    kind?: string;
+    id?: number;
+    method?: string;
+    params?: Record<string, unknown>;
+  };
+  if (!data || data.src !== "deskApp" || data.kind !== "request") return;
+  const { id, method, params = {} } = data;
+  const source = event.source as Window | null;
+  if (!source) return;
+
+  const reply = (result: unknown) =>
+    source.postMessage({ src: "deskApp", kind: "reply", id, result }, "*");
+  const replyErr = (err: unknown) =>
+    source.postMessage(
+      { src: "deskApp", kind: "reply", id, error: String(err) },
+      "*"
+    );
+
+  try {
+    switch (method) {
+      case "loadDocument": {
+        const path = params.path as string;
+        const size = (await invoke("document_size", { path })) as number;
+        const CHUNK = 1 << 20;
+        const out: number[] = [];
+        let offset = 0;
+        while (offset < size) {
+          const length = Math.min(CHUNK, size - offset);
+          const chunk = (await invoke("read_document_chunk", {
+            path,
+            offset,
+            length,
+          })) as number[];
+          out.push(...chunk);
+          offset += chunk.length;
+          if (chunk.length === 0) break;
+        }
+        reply(out);
+        break;
+      }
+      case "save": {
+        const bytes = params.bytes as number[];
+        const path = params.path as string | undefined;
+        if (path) {
+          await invoke("save_document", {
+            path,
+            bytes,
+          });
+          reply(path);
+        } else {
+          reply(null);
+        }
+        break;
+      }
+      case "saveAs": {
+        const suggestedName = params.suggestedName as string;
+        const bytes = params.bytes as number[];
+        const newPath = (await invoke("pick_save_path", {
+          suggestedName,
+        })) as string | null;
+        if (!newPath) { reply(null); break; }
+        await invoke("save_document", { path: newPath, bytes });
+        await invoke("add_recent_file", { path: newPath }).catch(() => undefined);
+        reply(newPath);
+        break;
+      }
+      case "rename": {
+        const newName = params.newName as string;
+        const path = params.path as string | undefined;
+        if (!path) { reply(null); break; }
+        const newPath = (await invoke("rename_document", {
+          path,
+          newName,
+        })) as string;
+        reply(newPath);
+        break;
+      }
+      case "setDirty": {
+        // iframe editors can't call set_window_dirty directly (no window
+        // label context). Best-effort: no-op on the launcher side — the
+        // editor's own webview window owns its dirty state.
+        reply(null);
+        break;
+      }
+      case "openViaMenu": {
+        const path = (await invoke("pick_open_document").catch(
+          () => null
+        )) as string | null;
+        if (path) {
+          const ext = path.split(".").pop()?.toLowerCase() ?? "";
+          const kind = ["xlsx", "xlsm", "ods", "csv", "tsv", "tab"].includes(ext)
+            ? "sheets"
+            : "docx";
+          await invoke("open_document_window", { kind, filePath: path }).catch(
+            (e: unknown) => console.error("[iframe-bridge] open failed", e)
+          );
+        }
+        reply(null);
+        break;
+      }
+      case "getProfile": {
+        const profile = await invoke("get_profile");
+        reply(profile);
+        break;
+      }
+      case "exportPdf": {
+        const suggestedName = params.suggestedName as string;
+        const result = await invoke("export_pdf", { suggestedName });
+        reply(result);
+        break;
+      }
+      case "writeRecovery": {
+        const path = params.path as string;
+        const bytes = params.bytes as number[];
+        await invoke("write_recovery", { path, bytes });
+        reply(null);
+        break;
+      }
+      case "readRecovery": {
+        const path = params.path as string;
+        const result = await invoke("read_recovery", { path });
+        reply(result);
+        break;
+      }
+      case "clearRecovery": {
+        const path = params.path as string;
+        await invoke("clear_recovery", { path });
+        reply(null);
+        break;
+      }
+      case "getStore": {
+        const key = params.key as string;
+        const result = await invoke("casual_store_get", { key });
+        reply(result);
+        break;
+      }
+      case "setStore": {
+        const key = params.key as string;
+        const value = params.value as string;
+        await invoke("casual_store_set", { key, value });
+        reply(null);
+        break;
+      }
+      default:
+        replyErr(`unknown method: ${method}`);
+    }
+  } catch (err) {
+    replyErr(err instanceof Error ? err.message : String(err));
+  }
+});
+
 boot().catch((err) => {
   console.error("boot failed", err);
   hideBootSkeleton();

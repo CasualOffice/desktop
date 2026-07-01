@@ -1473,6 +1473,43 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
+/// Generic key→value store backed by individual JSON files in app_config_dir.
+/// Used by the editor webview to persist building-blocks, citations, and other
+/// data that must survive a webview storage clear (localStorage wipe) — unlike
+/// localStorage these files live in the native config directory alongside
+/// profile.json and settings.json.
+///
+/// Key sanitisation: only [a-zA-Z0-9_-] characters are accepted. An invalid key
+/// returns an error rather than risking a path-traversal write.
+fn store_path(app: &AppHandle, key: &str) -> Result<std::path::PathBuf, String> {
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!("invalid store key: {key:?}"));
+    }
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("config dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir config dir: {e}"))?;
+    Ok(dir.join(format!("store_{key}.json")))
+}
+
+#[tauri::command]
+fn casual_store_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    let path = store_path(&app, &key)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(&path)
+        .map(Some)
+        .map_err(|e| format!("read store: {e}"))
+}
+
+#[tauri::command]
+fn casual_store_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let path = store_path(&app, &key)?;
+    atomic_write(&path, value.as_bytes()).map_err(|e| format!("write store: {e}"))
+}
+
 #[tauri::command]
 fn is_first_run(app: AppHandle) -> bool {
     // Only true when profile.json genuinely doesn't exist.
@@ -1921,6 +1958,8 @@ pub fn run() {
             apply_privacy_mode,
             broadcast_theme,
             get_app_version,
+            casual_store_get,
+            casual_store_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
