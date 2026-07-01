@@ -1475,9 +1475,13 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 fn is_first_run(app: AppHandle) -> bool {
-    profile_path(&app)
-        .map(|p| !p.exists())
-        .unwrap_or(true)
+    // Only true when profile.json genuinely doesn't exist.
+    // If app_config_dir() fails (permission issue, bad update), return false:
+    // silently running the wizard would look like data loss to a returning user.
+    match profile_path(&app) {
+        Ok(p) => !p.exists(),
+        Err(_) => false,
+    }
 }
 
 #[tauri::command]
@@ -1808,6 +1812,12 @@ pub fn run() {
             //     bring the launcher to front.
             if let Some(path) = first_openable_path(&args) {
                 open_file_path(app, path);
+                // Hide the launcher — the user opened a file from the OS
+                // file manager, not from within the app. Keep it resident
+                // so Cmd/Win+clicking the dock icon brings it back.
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
                 return;
             }
             if let Some(w) = app.get_webview_window("main") {
@@ -1922,15 +1932,28 @@ pub fn run() {
             // path is dropped, so no editor window ever opens. The argv path in
             // setup()/single-instance only covers Linux + Windows. (Gated to
             // macOS/iOS — `RunEvent::Opened` only exists / fires there.)
+            // macOS: RunEvent::Opened fires for file-association opens.
+            // setup() already showed the launcher (argv had no path), so we
+            // must hide it here once we know a file is being opened — that's
+            // what produces the "two windows" UX on macOS.
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = _event {
+                let mut opened_any = false;
                 for url in urls {
                     if let Ok(path) = url.to_file_path() {
                         if let Some(p) = path.to_str() {
                             if DocKind::from_path(p).is_some() {
                                 open_file_path(_app, p.to_string());
+                                opened_any = true;
                             }
                         }
+                    }
+                }
+                if opened_any {
+                    // Launcher was shown speculatively in setup(); hide it now
+                    // that we know the user opened a file, not the home screen.
+                    if let Some(w) = _app.get_webview_window("main") {
+                        let _ = w.hide();
                     }
                 }
             }
