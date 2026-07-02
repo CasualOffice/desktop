@@ -1835,6 +1835,59 @@ fn get_app_version(app: AppHandle) -> String {
 }
 
 
+// --- DocOps AI proxy --------------------------------------------------------
+
+/// Arguments for the `docops_llm_call` Tauri command.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocopsLlmArgs {
+    messages: serde_json::Value,
+    tools: serde_json::Value,
+    model: String,
+    system: String,
+    max_tokens: u32,
+    /// Caller-supplied API key. Required when no ANTHROPIC_API_KEY env var is
+    /// set on the desktop (the typical BYO-key path).
+    api_key: String,
+}
+
+/// Forward a DocOps LLM request to Anthropic from native Rust.
+///
+/// Keeping the call in Rust rather than in the webview means:
+///  - The API key never has to live in localStorage or be exposed in
+///    the renderer process.
+///  - Native TLS + system proxy settings are used automatically.
+///  - Future keychain integration is a one-line change here.
+#[tauri::command]
+async fn docops_llm_call(args: DocopsLlmArgs) -> Result<serde_json::Value, String> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or(args.api_key);
+    if api_key.is_empty() {
+        return Err("No API key. Set ANTHROPIC_API_KEY or supply apiKey.".into());
+    }
+
+    let body = serde_json::json!({
+        "model": args.model,
+        "max_tokens": args.max_tokens,
+        "system": args.system,
+        "messages": args.messages,
+        "tools": args.tools,
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", &api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("response parse failed: {e}"))
+}
+
 // --- App entry --------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1960,6 +2013,7 @@ pub fn run() {
             get_app_version,
             casual_store_get,
             casual_store_set,
+            docops_llm_call,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
