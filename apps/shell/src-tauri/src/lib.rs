@@ -1838,6 +1838,24 @@ fn get_app_version(app: AppHandle) -> String {
 // --- DocOps AI proxy --------------------------------------------------------
 
 /// Arguments for the `docops_llm_call` Tauri command.
+///
+/// The LLM endpoint and authentication are configured via environment variables
+/// so the desktop can target any provider or local on-device service:
+///
+///   LLM_ENDPOINT        Full POST URL.
+///                       Default: https://api.anthropic.com/v1/messages
+///                       Ollama:  http://localhost:11434/v1/chat/completions
+///                       llama.cpp: http://localhost:8080/v1/chat/completions
+///
+///   LLM_API_KEY         Server-side key. Falls back to ANTHROPIC_API_KEY.
+///                       Not required for local models (Ollama etc.).
+///
+///   LLM_API_KEY_HEADER  Header name for the key.
+///                       Default: x-api-key (Anthropic)
+///                       Use: Authorization for OpenAI-compatible endpoints.
+///
+///   LLM_EXTRA_HEADERS   JSON object of additional headers.
+///                       Example: {"anthropic-version":"2023-06-01"}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DocopsLlmArgs {
@@ -1846,24 +1864,46 @@ struct DocopsLlmArgs {
     model: String,
     system: String,
     max_tokens: u32,
-    /// Caller-supplied API key. Required when no ANTHROPIC_API_KEY env var is
-    /// set on the desktop (the typical BYO-key path).
+    /// Caller-supplied API key. Ignored when LLM_API_KEY / ANTHROPIC_API_KEY
+    /// is set in the environment (env always takes precedence).
     api_key: String,
 }
 
-/// Forward a DocOps LLM request to Anthropic from native Rust.
+/// Forward a single DocOps LLM round to the configured LLM endpoint.
 ///
-/// Keeping the call in Rust rather than in the webview means:
-///  - The API key never has to live in localStorage or be exposed in
-///    the renderer process.
+/// Keeping the call in Rust means:
+///  - The API key never has to live in localStorage or be exposed in the
+///    renderer process.
 ///  - Native TLS + system proxy settings are used automatically.
 ///  - Future keychain integration is a one-line change here.
+///  - Any provider reachable from the machine works (Anthropic, OpenAI,
+///    Ollama, llama.cpp) via the LLM_* env vars.
 #[tauri::command]
 async fn docops_llm_call(args: DocopsLlmArgs) -> Result<serde_json::Value, String> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or(args.api_key);
-    if api_key.is_empty() {
-        return Err("No API key. Set ANTHROPIC_API_KEY or supply apiKey.".into());
-    }
+    let endpoint = std::env::var("LLM_ENDPOINT")
+        .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".to_string());
+
+    let server_key = std::env::var("LLM_API_KEY")
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .ok();
+
+    // For local models (Ollama, llama.cpp) no key is needed; only error when
+    // calling a provider that actually requires one and none is configured.
+    let api_key = server_key.unwrap_or_else(|| args.api_key.clone());
+
+    let key_header = std::env::var("LLM_API_KEY_HEADER")
+        .unwrap_or_else(|_| "x-api-key".to_string());
+
+    let key_value = if key_header.to_lowercase() == "authorization" {
+        format!("Bearer {api_key}")
+    } else {
+        api_key.clone()
+    };
+
+    let extra_headers: serde_json::Value = std::env::var("LLM_EXTRA_HEADERS")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let body = serde_json::json!({
         "model": args.model,
@@ -1873,12 +1913,26 @@ async fn docops_llm_call(args: DocopsLlmArgs) -> Result<serde_json::Value, Strin
         "tools": args.tools,
     });
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
+    let mut req = reqwest::Client::new()
+        .post(&endpoint)
+        .header("content-type", "application/json")
+        .json(&body);
+
+    // Only inject the auth header when a key is actually present; local
+    // models typically run without auth.
+    if !api_key.is_empty() {
+        req = req.header(&key_header, &key_value);
+    }
+
+    if let Some(obj) = extra_headers.as_object() {
+        for (k, v) in obj {
+            if let Some(vs) = v.as_str() {
+                req = req.header(k.as_str(), vs);
+            }
+        }
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
